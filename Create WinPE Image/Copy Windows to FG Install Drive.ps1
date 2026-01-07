@@ -95,15 +95,16 @@ if (Test-Path $winPEsourcePath) {
 	Remove-Item "$fgWindowsDriveLetter\*" -Recurse -Force -ErrorAction Stop # If updating an existing drive, just delete the contents (without re-formatting it) to re-copy the latest.
 	Copy-Item "$winPEsourcePath\*" $fgWindowsDriveLetter -Recurse -ErrorAction Stop
 	# NOTE: DO NOT use "\Program Files (x86)\Windows Kits\10\Assessment and Deployment Kit\Windows Preinstallation Environment\MakeWinPEMedia.cmd"
-	# script because it would reformat the specified drive letter, and also set it to be the bootable partition in Legacy BIOS mode,
-	# which is unnecessary and would break our existing Legacy BIOS GRUB boot in "FG BOOT" partition.
-	# So, without wanting those parts of the script, the only relevant portion is simply copying the files to the specified drive letter which we easily can manually instead.
+	# script because it would reformat the specified drive letter, and also set it to be the ACTIVE/primary bootable partition in Legacy BIOS mode,
+	# which we do not want and would break our existing Legacy BIOS GRUB boot in "FG BOOT" partition.
+	# So, without wanting those parts of the script, the only relevant portion is simply copying the files to the specified drive letter
+	# (and setting it as Legacy BIOS bootable, but NOT the ACTIVE/primary bootable partition in Legacy BIOS mode) which we easily can manually instead.
 
 	# For simplicity for technicians, DO NOT want this WinPE to show up in firmware boot menus,
 	# only want to have the single "FG BOOT" partition be bootable (in both Legacy BIOS and UEFI mode),
-	# and the GRUB menu in the "FG BOOT" partition has an menu entry to "Install Windows" by chainloading "\EFI\Microsoft\Boot\WinPE.efi" (which "bootmgfw.efi" will be renamed to below).
-	# NOTE: There is no option to install Windows in the Legacy BIOS mode GRUB menu since only Windows 11 can be installed, and UEFI mode is a Microsoft requirement for Windows 11.
-	Remove-Item "$fgWindowsDriveLetter\bootmgr*", "$fgWindowsDriveLetter\EFI\Boot\boot*.efi" -Force -ErrorAction Stop
+	# and the GRUB menu in the "FG BOOT" partition has an menu entry to "Install Windows" by chainloading "\EFI\Microsoft\Boot\WinPE.efi" (which "bootmgfw.efi" will be renamed to below),
+	# and also to chainload "\bootmgr" on "FG WINDOWS" in the Legacy BIOS mode GRUB menu (only Windows 10 can be installed AND NOT LICENSED in Legacy BIOS mode for testing or firmware updates).
+	Remove-Item "$fgWindowsDriveLetter\bootmgr.efi", "$fgWindowsDriveLetter\EFI\Boot\boot*.efi" -Force -ErrorAction Stop # NOTE: DO NOT delete "\bootmgr" which is necessary for Legacy BIOS booting.
 	if (Test-Path "$fgWindowsDriveLetter\EFI\Microsoft\Boot\bootmgfw.efi") { # This file may not exist here yet since "MakeWinPEMedia.cmd" copies it into place, which would not have been run (see notes above).
 		Move-Item "$fgWindowsDriveLetter\EFI\Microsoft\Boot\bootmgfw.efi" "$fgWindowsDriveLetter\EFI\Microsoft\Boot\WinPE.efi" -Force -ErrorAction Stop
 	} elseif (Test-Path "$winPEoutputPath\bootbins\bootmgfw.efi") {
@@ -141,8 +142,19 @@ if (Test-Path $winPEsourcePath) {
 		$verificationError = $true
 	}
 
+	# Set "FG WINDOWS" as a Legacy BIOS bootable partition (but NOT the ACTIVE/primary bootable partition in Legacy BIOS mode since we want that to stay as "FG BOOT").
+	Write-Output "`n    Setting `"$fgWindowsDriveLetter`" as Legacy BIOS Bootable..."
+	$bootsectExitCode = (Start-Process 'bootsect' -NoNewWindow -Wait -PassThru -ArgumentList '/nt60', "`"$fgWindowsDriveLetter`"", '/force').ExitCode
+	# NOTE: DO NOT use "/mbr" like "MakeWinPEMedia.cmd" does since I believe that would set this partition to be the ACTIVE/primary bootable partition in Legacy BIOS mode (which we want that to stay as "FG BOOT"),
+	# and using "/mbr" renders the drive unbootable in Legacy BIOS mode since persumably it creates some kind of conflict with the settings already in place for the "FG BOOT" partition.
+
+	if ($bootsectExitCode -ne 0) {
+		Write-Host "`n      FAILED to Set `"$fgWindowsDriveLetter`" as Legacy BIOS Bootable" -ForegroundColor Red
+		$verificationError = $true
+	}
+
 	$copyWinPEendDate = Get-Date
-	Write-Output "    Copied $winPEorRE at $copyWinPEendDate ($([math]::Round(($copyWinPEEndDate - $copyWinPEstartDate).TotalMinutes, 2)) Minutes)"
+	Write-Output "`n    Copied $winPEorRE at $copyWinPEendDate ($([math]::Round(($copyWinPEEndDate - $copyWinPEstartDate).TotalMinutes, 2)) Minutes)"
 } else {
 	Write-Host "  NO WINPE SOURCE FOLDER" -ForegroundColor Yellow
 	$verificationError = $true

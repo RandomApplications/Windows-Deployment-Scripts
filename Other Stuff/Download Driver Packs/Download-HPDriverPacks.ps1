@@ -23,34 +23,34 @@
 
 $ProgressPreference = 'SilentlyContinue' # Not showing progress makes "Invoke-WebRequest" downloads MUCH faster: https://stackoverflow.com/a/43477248
 
-if (Test-Path "$PSScriptRoot\DriverPackCatalog-HP.cab") {
-	Remove-Item "$PSScriptRoot\DriverPackCatalog-HP.cab" -Force
+if (Test-Path "$PSScriptRoot\Driver Pack Catalogs\DriverPackCatalog-HP.cab") {
+	Remove-Item "$PSScriptRoot\Driver Pack Catalogs\DriverPackCatalog-HP.cab" -Force
 }
 
 if ($IsWindows -or ($null -eq $IsWindows)) {
 	[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12, [Net.SecurityProtocolType]::Ssl3
 }
 
-Invoke-WebRequest -Uri 'https://hpia.hpcloud.hp.com/downloads/driverpackcatalog/HPClientDriverPackCatalog.cab' -OutFile "$PSScriptRoot\DriverPackCatalog-HP.cab"
+Invoke-WebRequest -Uri 'https://hpia.hpcloud.hp.com/downloads/driverpackcatalog/HPClientDriverPackCatalog.cab' -OutFile "$PSScriptRoot\Driver Pack Catalogs\DriverPackCatalog-HP.cab"
 # OLD CAB (no longer updated): http://ftp.hp.com/pub/caps-softpaq/cmit/HPClientDriverPackCatalog.cab
 
-if (($IsWindows -or ($null -eq $IsWindows)) -and (Test-Path "$PSScriptRoot\DriverPackCatalog-HP.cab")) {
-	$expandExitCode = (Start-Process 'expand' -NoNewWindow -Wait -PassThru -RedirectStandardOutput 'NUL' -ArgumentList "`"$PSScriptRoot\DriverPackCatalog-HP.cab`"", "`"$PSScriptRoot\DriverPackCatalog-HP-NEW.xml`"").ExitCode
+if (($IsWindows -or ($null -eq $IsWindows)) -and (Test-Path "$PSScriptRoot\Driver Pack Catalogs\DriverPackCatalog-HP.cab")) {
+	$expandExitCode = (Start-Process 'expand' -NoNewWindow -Wait -PassThru -RedirectStandardOutput 'NUL' -ArgumentList "`"$PSScriptRoot\Driver Pack Catalogs\DriverPackCatalog-HP.cab`"", "`"$PSScriptRoot\Driver Pack Catalogs\DriverPackCatalog-HP-NEW.xml`"").ExitCode
 
 	if ($expandExitCode -ne 0) {
 		Write-Output ">>> EXPANSION FAILED (EXIT CODE $expandExitCode) <<<"
 	}
 
-	if ((Test-Path "$PSScriptRoot\DriverPackCatalog-HP-NEW.xml") -and (Test-Path "$PSScriptRoot\DriverPackCatalog-HP.xml")) {
-		Remove-Item "$PSScriptRoot\DriverPackCatalog-HP.xml" -Force
+	if ((Test-Path "$PSScriptRoot\Driver Pack Catalogs\DriverPackCatalog-HP-NEW.xml") -and (Test-Path "$PSScriptRoot\Driver Pack Catalogs\DriverPackCatalog-HP.xml")) {
+		Remove-Item "$PSScriptRoot\Driver Pack Catalogs\DriverPackCatalog-HP.xml" -Force
 	}
 
-	Move-Item "$PSScriptRoot\DriverPackCatalog-HP-NEW.xml" "$PSScriptRoot\DriverPackCatalog-HP.xml" -Force
+	Move-Item "$PSScriptRoot\Driver Pack Catalogs\DriverPackCatalog-HP-NEW.xml" "$PSScriptRoot\Driver Pack Catalogs\DriverPackCatalog-HP.xml" -Force
 }
 
 Get-Date
 
-[xml]$hpDriverPackCatalogXML = Get-Content "$PSScriptRoot\DriverPackCatalog-HP.xml"
+[xml]$hpDriverPackCatalogXML = Get-Content "$PSScriptRoot\Driver Pack Catalogs\DriverPackCatalog-HP.xml"
 
 $hpSoftPaqURLsByIDs = @{}
 $allSoftPaqsSize = 0
@@ -233,7 +233,14 @@ $validatedExeCount = 0
 $expandedCount = 0
 $notEnoughSpaceCount = 0
 
-$hpDriverPacksPath = 'F:\SMB\Drivers\Packs\HP'
+$systemTempDir = [System.Environment]::GetEnvironmentVariable('TEMP', 'Machine') # Get SYSTEM (not user) temporary directory, which should be "\Windows\Temp".
+if (-not (Test-Path $systemTempDir)) {
+	$systemTempDir = "$Env:SystemRoot\Temp"
+}
+
+$exeDownloadPath = "$systemTempDir\HP Driver Pack EXEs"
+
+$hpDriverPacksPath = '\\FG-WindowsNAS\FG-Windows-Drivers\Packs\HP' # SMB share credentials SHOULD BE SAVED in "Credential Manager" app so that it will auto-connect when the path is specified.
 
 foreach ($theseRedundantDriverPacks in ($uniqueDriverPacks.GetEnumerator() | Sort-Object -Property Key)) {
 	$thisUniqueDriverPack = $theseRedundantDriverPacks.Value | Select-Object -First 1
@@ -256,7 +263,6 @@ foreach ($theseRedundantDriverPacks in ($uniqueDriverPacks.GetEnumerator() | Sor
 	}
 
 	if (($IsWindows -or ($null -eq $IsWindows)) -and (Test-Path $hpDriverPacksPath)) {
-		$exeDownloadPath = "$hpDriverPacksPath\Unique Driver Pack EXEs"
 		$exeExpansionPath = "$hpDriverPacksPath\Unique Driver Packs"
 
 		if (-not (Test-Path $exeDownloadPath)) {
@@ -272,7 +278,7 @@ foreach ($theseRedundantDriverPacks in ($uniqueDriverPacks.GetEnumerator() | Sor
 				Remove-Item "$exeDownloadPath\$($thisUniqueDriverPack.FileName)" -Force
 			}
 
-			if ((Get-Volume (Get-Item $hpDriverPacksPath).PSDrive.Name).SizeRemaining -ge 10GB) {
+			if (($exeDownloadPath.StartsWith('\\') -or ((Get-Item $exeDownloadPath).PSDrive.Free -ge 10GB)) -and ($hpDriverPacksPath.StartsWith('\\') -or ((Get-Item $hpDriverPacksPath).PSDrive.Free -ge 10GB))) {
 				Write-Output 'DOWNLOADING...'
 				Invoke-WebRequest -Uri $thisUniqueDriverPack.DownloadURL -OutFile "$exeDownloadPath\$($thisUniqueDriverPack.FileName)"
 
@@ -371,8 +377,8 @@ if (($IsWindows -or ($null -eq $IsWindows)) -and (Test-Path $hpDriverPacksPath))
 		}
 	}
 
-	if (Test-Path "$hpDriverPacksPath\Unique Driver Pack EXEs") {
-		Remove-Item "$hpDriverPacksPath\Unique Driver Pack EXEs" -Recurse -Force
+	if (Test-Path $exeDownloadPath) {
+		Remove-Item $exeDownloadPath -Recurse -Force
 	}
 }
 
@@ -384,6 +390,11 @@ Write-Output "VALIDATED EXEs: $validatedExeCount"
 Write-Output "EXPANDED: $expandedCount"
 Write-Output "NOT ENOUGH SPACE TO DOWNLOAD: $notEnoughSpaceCount"
 Write-Output '----------'
+
+if (-not (Test-Path $hpDriverPacksPath)) {
+	Write-Output "ERROR: `"$hpDriverPacksPath`" NOT FOUND"
+	Write-Output '----------'
+}
 
 if ($IsWindows -or ($null -eq $IsWindows)) {
 	$Host.UI.RawUI.FlushInputBuffer() # So that key presses before this point are ignored.

@@ -31,8 +31,9 @@
 
 $Host.UI.RawUI.WindowTitle = 'Create WinPE Image'
 
-$createISO = $false;
-$includeResourcesInUSB = $false;
+$updateWindowsResourcesOnSMB = $true # The SMB resources could be used for either a USB or Network install and should be kept up-to-date.
+$includeWindowsResourcesForUSB = $false # This was for the OLD STYLE standalone Windows installer USBs and IS NOT NEEDED for the newer "FG Install" drives which stores these resources on a separate partition.
+$createISO = $false # This was for the OLD Ventoy-based combined USB installers and IS NOT NEEDED for the newer "FG Install" drives.
 
 $winPEmajorVersion = '11' # It is fine to use WinPE/WinRE from Windows 11 even when Windows 10 will be installed.
 $winPEfeatureVersion = '24H2' # WinPE version in the December 2024 ADK is 10.0.26100.1 (11 24H2).
@@ -432,47 +433,6 @@ function Add-WinPECustomizations {
 
 
 	if (Test-Path "$PSScriptRoot\Install Folder Resources") {
-		$windows11SupportedProcessorsListsBasePath = "$(Split-Path -Parent $PSScriptRoot)\Other Stuff\Windows 11 Supported Processors Lists"
-		if (-not (Test-Path "$windows11SupportedProcessorsListsBasePath\Windows 11 Supported Processors Lists $(Get-Date -Format 'yyyy.M.d')")) {
-			Write-Output "`n  Updating Latest Windows 11 Supported Processors Lists for WhyNotWin11 to Use..."
-			Start-Process 'powershell' -NoNewWindow -Wait -ArgumentList '-NoLogo', '-NoProfile', '-ExecutionPolicy Unrestricted', "-File `"$windows11SupportedProcessorsListsBasePath\Update Windows 11 Supported Processors Lists.ps1`"" -ErrorAction Stop
-		}
-
-		$windows11SupportedProcessorsListsInInstallFolderScriptsBasePath = "$PSScriptRoot\Install Folder Resources\Scripts\Windows 11 Supported Processors Lists"
-		if (Test-Path $windows11SupportedProcessorsListsInInstallFolderScriptsBasePath) {
-			Remove-Item $windows11SupportedProcessorsListsInInstallFolderScriptsBasePath -Recurse -Force -ErrorAction Stop
-		}
-
-		New-Item -ItemType 'Directory' -Path $windows11SupportedProcessorsListsInInstallFolderScriptsBasePath -ErrorAction Stop | Out-Null
-
-		$latestWindows11SupportedAMDProcessorsListPath = (Get-ChildItem "$windows11SupportedProcessorsListsBasePath\Windows 11 Supported Processors Lists 20*\SupportedProcessorsAMD.txt" -File | Sort-Object -Property CreationTime | Select-Object -Last 1).FullName
-		if (Test-Path $latestWindows11SupportedAMDProcessorsListPath) {
-			Write-Output "`n  Copying Latest Windows 11 Supported AMD Processors Lists Into Scripts in Install Folder Resources...`n    $latestWindows11SupportedAMDProcessorsListPath"
-
-			Copy-Item $latestWindows11SupportedAMDProcessorsListPath "$windows11SupportedProcessorsListsInInstallFolderScriptsBasePath\SupportedProcessorsAMD.txt" -Force -ErrorAction Stop
-		} else {
-			Write-Host "`n  NO LATEST WINDOWS 11 SUPPORTED AMD PROCESSORS LIST" -ForegroundColor Yellow
-		}
-
-		$latestWindows11SupportedIntelProcessorsListPath = (Get-ChildItem "$windows11SupportedProcessorsListsBasePath\Windows 11 Supported Processors Lists 20*\SupportedProcessorsIntel.txt" -File | Sort-Object -Property CreationTime | Select-Object -Last 1).FullName
-		if (Test-Path $latestWindows11SupportedIntelProcessorsListPath) {
-			Write-Output "`n  Copying Latest Windows 11 Supported Intel Processors Lists Into Scripts in Install Folder Resources...`n    $latestWindows11SupportedIntelProcessorsListPath"
-
-			Copy-Item $latestWindows11SupportedIntelProcessorsListPath "$windows11SupportedProcessorsListsInInstallFolderScriptsBasePath\SupportedProcessorsIntel.txt" -Force -ErrorAction Stop
-		} else {
-			Write-Host "`n  NO LATEST WINDOWS 11 SUPPORTED INTEL PROCESSORS LIST" -ForegroundColor Yellow
-		}
-
-		$latestWindows11SupportedQualcommProcessorsListPath = (Get-ChildItem "$windows11SupportedProcessorsListsBasePath\Windows 11 Supported Processors Lists 20*\SupportedProcessorsQualcomm.txt" -File | Sort-Object -Property CreationTime | Select-Object -Last 1).FullName
-		if (Test-Path $latestWindows11SupportedQualcommProcessorsListPath) {
-			Write-Output "`n  Copying Latest Windows 11 Supported Qualcomm Processors Lists Into Scripts in Install Folder Resources...`n    $latestWindows11SupportedQualcommProcessorsListPath"
-
-			Copy-Item $latestWindows11SupportedQualcommProcessorsListPath "$windows11SupportedProcessorsListsInInstallFolderScriptsBasePath\SupportedProcessorsQualcomm.txt" -Force -ErrorAction Stop
-		} else {
-			Write-Host "`n  NO LATEST WINDOWS 11 SUPPORTED QUALCOMM PROCESSORS LIST" -ForegroundColor Yellow
-		}
-
-
 		$installFolderResourcesToCopy = Get-ChildItem "$PSScriptRoot\Install Folder Resources"
 
 		if ($installFolderResourcesToCopy.Count -gt 0) {
@@ -543,7 +503,7 @@ function Add-WinPECustomizations {
 						Write-Output "    ALREADY INSTALLED Extra Driver $thisDriverIndex of $($winPEextraDriverInfPaths.Count): $thisDriverDisplayName (MATCHED INF HASH & CONTENTS)"
 					} else {
 						try {
-							Write-Output "    Installing Extra Driver $thisDriverIndex of $($winPEextraDriverInfPaths.Count): $thisDriverDisplayName ($([math]::Round(((Get-ChildItem -Path $thisDriverFolderPath -Recurse | Measure-Object -Property Length -Sum).Sum / 1MB), 2)) MB)"
+							Write-Output "    Installing Extra Driver $thisDriverIndex of $($winPEextraDriverInfPaths.Count): $thisDriverDisplayName ($([math]::Round(((Get-ChildItem -Path $thisDriverFolderPath -Recurse | Measure-Object -Property 'Length' -Sum).Sum / 1MB), 2)) MB)"
 							Add-WindowsDriver -Path "$systemTempDir\mountPE" -Driver $thisDriverInfPath -ErrorAction Stop | Out-Null
 							$installedDriverCount ++
 						} catch {
@@ -581,7 +541,7 @@ function Add-WinPECustomizations {
 
 				if (-not (Test-Path "$systemTempDir\mountPE\Windows\System32\DriverStore\FileRepository\$thisDriverFolderName")) {
 					try {
-						Write-Output "    Installing $latestWindowsProFullName Default Network Driver $thisDriverIndex of $($windowsExtractedDriverInfPaths.Count): $thisDriverFolderName ($([math]::Round(((Get-ChildItem -Path (Split-Path $thisDriverInfPath -Parent) -Recurse | Measure-Object -Property Length -Sum).Sum / 1MB), 2)) MB)"
+						Write-Output "    Installing $latestWindowsProFullName Default Network Driver $thisDriverIndex of $($windowsExtractedDriverInfPaths.Count): $thisDriverFolderName ($([math]::Round(((Get-ChildItem -Path (Split-Path $thisDriverInfPath -Parent) -Recurse | Measure-Object -Property 'Length' -Sum).Sum / 1MB), 2)) MB)"
 						Add-WindowsDriver -Path "$systemTempDir\mountPE" -Driver $thisDriverInfPath -ErrorAction Stop | Out-Null
 						$installedDriverCount ++
 					} catch {
@@ -611,8 +571,8 @@ function Add-WinPECustomizations {
 				$thisDriverFolderName = (Split-Path (Split-Path $thisDriverInfPath -Parent) -Leaf)
 
 				if (-not (Test-Path "$systemTempDir\mountPE\Windows\System32\DriverStore\FileRepository\$thisDriverFolderName")) {
-					$thisDriverSizeMB = $([math]::Round(((Get-ChildItem -Path (Split-Path $thisDriverInfPath -Parent) -Recurse | Measure-Object -Property Length -Sum).Sum / 1MB), 2))
-					if ($thisDriverSizeMB -lt 10) {
+					$thisDriverSizeMB = $([math]::Round(((Get-ChildItem -Path (Split-Path $thisDriverInfPath -Parent) -Recurse | Measure-Object -Property 'Length' -Sum).Sum / 1MB), 2))
+					if ($thisDriverSizeMB -lt 20) {
 						try {
 							Write-Output "    Installing Network Driver for USB Install $thisDriverIndex of $($winREnetDriverInfPaths.Count): $thisDriverFolderName ($thisDriverSizeMB MB)"
 							Add-WindowsDriver -Path "$systemTempDir\mountPE" -Driver $thisDriverInfPath -ErrorAction Stop | Out-Null
@@ -755,16 +715,108 @@ if (($winPEorRE -eq 'WinRE') -and (-not $winPEname.EndsWith('-NetDriversForUSB')
 }
 
 
-if ($includeResourcesInUSB) {
-	if (Test-Path "$winPEoutputPath\media") {
-		Write-Output "`n`n  Updating `"windows-resources`" Folder Contents for USB Install..."
+if ($includeWindowsResourcesForUSB -or $updateWindowsResourcesOnSMB) {
+	$updateWindowsResourcesPaths = @()
 
-		if (Test-Path "$winPEoutputPath\media\windows-resources") {
-			Remove-Item "$winPEoutputPath\media\windows-resources" -Recurse -Force -ErrorAction Stop
+	if ($includeWindowsResourcesForUSB) {
+		if (Test-Path "$winPEoutputPath\media") {
+			$updateWindowsResourcesPaths += "$winPEoutputPath\media\windows-resources"
+		} else {
+			Write-Host "`n`n  NO MEDIA FOLDER TO UPDATE WINDOWS RESOURCES FOR $winPEorRE USB" -ForegroundColor Red
+		}
+	} else {
+		Write-Host "`n`n  NOT ADDING RESOURCES TO BOOT FOLDER FOR STANDALONE $winPEorRE USB (WILL BE INCLUDED IN SEPARATE USB PARTITION)" -ForegroundColor Yellow
+	}
+
+	if ($updateWindowsResourcesOnSMB) {
+		[xml]$smbCredentialsXML = Get-Content "$PSScriptRoot\smb-credentials-rw.xml" -ErrorAction Stop
+
+		$smbServerAddress = $smbCredentialsXML.smbCredentials.resourcesReadWriteShare.address
+		$smbServerAvailable = $false
+		try { # NOTE: Get "smbServerAddress" IP since NAME may already be mounted for "driversReadWriteShare" and using IP will trick Windows into allowing a duplicate mount of the same SMB server.
+			$smbServerAddress = (Test-Connection $smbServerAddress -Count 1 -ErrorAction Stop).IPV4Address.IPAddressToString
+			if ($null -ne $smbServerAddress) {
+				$smbServerAvailable = $true
+			}
+		} catch {
+			Write-Host "`n  ERROR CONNECTING TO LOCAL FREE GEEK SERVER `"$smbServerAddress`": $_" -ForegroundColor Red
 		}
 
-		New-Item -ItemType 'Directory' -Path "$winPEoutputPath\media\windows-resources" -ErrorAction Stop | Out-Null
+		$smbShare = "\\$smbServerAddress\$($smbCredentialsXML.smbCredentials.resourcesReadWriteShare.shareName)"
+		$smbUsername = $smbCredentialsXML.smbCredentials.resourcesReadWriteShare.username # (This is the user that can WRITE) domain MUST NOT be prefixed in username.
+		$smbPassword = $smbCredentialsXML.smbCredentials.resourcesReadWriteShare.password
 
+		if ($smbServerAvailable) {
+			Write-Host "`n  Mounting SMB Share for Windows Resources - PLEASE WAIT, THIS MAY TAKE A MOMENT..." -NoNewline
+
+			# Try to connect to SMB Share 5 times before stopping to show error to user because sometimes it takes a few attempts, or it sometimes just fails and takes more manual reattempts before it finally works.
+			for ($smbMountAttempt = 0; $smbMountAttempt -lt 5; $smbMountAttempt ++) {
+				try {
+					# If we don't get the New-SmbMapping return value it seems to be asynchronous, which results in messages being show out of order result and also result in a failure not being detected.
+					$smbMappingStatus = (New-SmbMapping -RemotePath $smbShare -UserName $smbUsername -Password $smbPassword -Persistent $false -ErrorAction Stop).Status
+
+					if ($smbMappingStatus -eq 0) {
+						Write-Host "`n`n  Successfully Mounted SMB Share for Windows Resources" -ForegroundColor Green
+						$updateWindowsResourcesPaths += $smbShare
+					} else {
+						throw "SMB Mapping Status $smbMappingStatus"
+					}
+
+					break
+				} catch {
+					if ($smbMountAttempt -lt 4) {
+						Write-Host '.' -NoNewline
+						Start-Sleep ($smbMountAttempt + 1) # Sleep a little longer after each attempt.
+					} else {
+						Write-Host "`n`n  ERROR MOUNTING SMB SHARE: $_" -ForegroundColor Red
+						Write-Host "`n  ERROR: Failed to connect to local Free Geek SMB share `"$smbShare`"." -ForegroundColor Red
+					}
+				}
+			}
+		}
+	} else {
+		Write-Host "`n`n  NOT UPDATING WINDOWS RESOURCES ON SMB SHARE" -ForegroundColor Yellow
+	}
+
+	foreach ($thisWindowsResourcesPath in $updateWindowsResourcesPaths) {
+		$windowsResourcesLocationTitle = 'for USB Install'
+		$thisOSimagesPath = "$thisWindowsResourcesPath\os-images"
+		$thisSetupResourcesPath = "$thisWindowsResourcesPath\setup-resources"
+
+		if ($thisWindowsResourcesPath.StartsWith('\\')) {
+			$windowsResourcesLocationTitle = 'on SMB'
+
+			if (-not (Test-Path $thisOSimagesPath)) {
+				New-Item -ItemType 'Directory' -Path $thisOSimagesPath -ErrorAction Stop | Out-Null
+			}
+
+			if (-not (Test-Path $thisSetupResourcesPath)) {
+				New-Item -ItemType 'Directory' -Path $thisSetupResourcesPath -ErrorAction Stop | Out-Null
+			}
+
+			$thisOSimagesPath += '\testing'
+			$thisSetupResourcesPath += '\testing' # MANUALLY move files to "production" when ready.
+
+			if (Test-Path $thisOSimagesPath) {
+				Remove-Item $thisOSimagesPath -Recurse -Force -ErrorAction Stop
+			}
+
+			New-Item -ItemType 'Directory' -Path $thisOSimagesPath -ErrorAction Stop | Out-Null
+
+			if (Test-Path $thisSetupResourcesPath) {
+				Remove-Item $thisSetupResourcesPath -Recurse -Force -ErrorAction Stop
+			}
+
+			# DO NOT create "$thisSetupResourcesPath" to allow the source to be copied directly to that path rather than creating a subfolder within that path.
+		} else {
+			if (Test-Path $thisWindowsResourcesPath) {
+				Remove-Item $thisWindowsResourcesPath -Recurse -Force -ErrorAction Stop
+			}
+
+			New-Item -ItemType 'Directory' -Path $thisWindowsResourcesPath -ErrorAction Stop | Out-Null
+		}
+
+		Write-Output "`n  Updating Windows Resources $windowsResourcesLocationTitle..."
 
 		$windowsMajorVersions = @('11', '10')
 
@@ -796,62 +848,61 @@ if ($includeResourcesInUSB) {
 						$latestWimPath = $latestWim.FullName
 						$latestWimFilename = $latestWim.BaseName
 
-						Write-Output "    Copying Latest Windows $thisWindowsMajorVersion $thisWindowsEdition Install Image ($latestWimFilename) Into `"windows-resources\os-images`"..."
+						Write-Output "    Copying Latest Windows $thisWindowsMajorVersion $thisWindowsEdition Install Image ($latestWimFilename) $windowsResourcesLocationTitle..."
 
-						if (-not (Test-Path "$winPEoutputPath\media\windows-resources\os-images")) {
-							New-Item -ItemType 'Directory' -Path "$winPEoutputPath\media\windows-resources\os-images" -ErrorAction Stop | Out-Null
+						if (-not (Test-Path $thisOSimagesPath)) {
+							New-Item -ItemType 'Directory' -Path $thisOSimagesPath -ErrorAction Stop | Out-Null
 						}
 
 						$wimFileSize = $latestWim.Length
 
 						$maxFat32FileSize = 4294967294
-						if ($wimFileSize -lt $maxFat32FileSize) {
-							Write-Output "      Windows $thisWindowsMajorVersion $thisWindowsEdition Install Image Is Within FAT32 Max File Size ($wimFileSize <= $maxFat32FileSize)"
-
-							Copy-Item $latestWimPath "$winPEoutputPath\media\windows-resources\os-images" -ErrorAction Stop
+						if ($thisWindowsResourcesPath.StartsWith('\\') -or ($wimFileSize -lt $maxFat32FileSize)) {
+							Copy-Item $latestWimPath $thisOSimagesPath -ErrorAction Stop
 						} else {
 							$splitMBs = 3000
 							Write-Host "      Windows $thisWindowsMajorVersion $thisWindowsEdition Install Image Is Bigger Than FAT32 Max File Size ($wimFileSize > $maxFat32FileSize)`n      SPLITTING WINDOWS IMAGE INTO $splitMBs MB SWMs" -ForegroundColor Yellow
 
-							Split-WindowsImage -ImagePath $latestWimPath -SplitImagePath "$winPEoutputPath\media\windows-resources\os-images\$latestWimFilename+.swm" -FileSize $splitMBs -CheckIntegrity -ErrorAction Stop | Out-Null
+							Split-WindowsImage -ImagePath $latestWimPath -SplitImagePath "$thisOSimagesPath\$latestWimFilename+.swm" -FileSize $splitMBs -CheckIntegrity -ErrorAction Stop | Out-Null
 
-							Rename-Item "$winPEoutputPath\media\windows-resources\os-images\$latestWimFilename+.swm" "$winPEoutputPath\media\windows-resources\os-images\$latestWimFilename+1.swm"
+							Rename-Item "$thisOSimagesPath\$latestWimFilename+.swm" "$thisOSimagesPath\$latestWimFilename+1.swm"
 						}
 					} else {
-						Write-Host "    NO WINDOWS $thisWindowsMajorVersion $thisWindowsEdition INSTALL IMAGE FILE FOR $winPEorRE USB" -ForegroundColor Yellow
+						Write-Host "    NO WINDOWS $thisWindowsMajorVersion $thisWindowsEdition INSTALL IMAGE FILE" -ForegroundColor Yellow
 					}
 				} else {
-					Write-Host "    NO WINDOWS $thisWindowsMajorVersion $thisWindowsEdition INSTALL IMAGE FOLDER FOR $winPEorRE USB" -ForegroundColor Yellow
+					Write-Host "    NO WINDOWS $thisWindowsMajorVersion $thisWindowsEdition INSTALL IMAGE FOLDER" -ForegroundColor Yellow
 				}
 			}
 		}
 
 
 		if (Test-Path $setupResourcesSourcePath) {
-			Write-Output "    Copying Setup Resources Into `"windows-resources\setup-resources`"..."
+			Write-Output "    Copying Setup Resources $windowsResourcesLocationTitle..."
 
-			Copy-Item $setupResourcesSourcePath "$winPEoutputPath\media\windows-resources\setup-resources" -Recurse -ErrorAction Stop
+			Copy-Item $setupResourcesSourcePath $thisSetupResourcesPath -Recurse -ErrorAction Stop
 		} else {
-			Write-Host "    NO SETUP RESOURCES FOLDER FOR $winPEorRE USB" -ForegroundColor Yellow
+			Write-Host "    NO SETUP RESOURCES FOLDER" -ForegroundColor Yellow
 		}
 
 
-		if (Test-Path $appInstallersSourcePath) {
-			Write-Output "    Copying App Installers Into `"windows-resources\app-installers`"..."
+		if (-not $thisWindowsResourcesPath.StartsWith('\\')) { # DO NOT need to update App Installers on SMB since those are kept up-to-date by "Download Latest Windows App Installers.ps1"
+			if (Test-Path $appInstallersSourcePath) {
+				Write-Output "    Copying App Installers $windowsResourcesLocationTitle..."
 
-			New-Item -ItemType 'Directory' -Path "$winPEoutputPath\media\windows-resources\app-installers" -ErrorAction Stop | Out-Null
+				New-Item -ItemType 'Directory' -Path "$thisWindowsResourcesPath\app-installers" -ErrorAction Stop | Out-Null
 
-			Get-ChildItem $appInstallersSourcePath -Exclude '*.sh', '*.ps1' -ErrorAction Stop | ForEach-Object {
-				Copy-Item $_ "$winPEoutputPath\media\windows-resources\app-installers" -Recurse -Force -ErrorAction Stop
+				Get-ChildItem $appInstallersSourcePath -Exclude '*.sh', '*.ps1' -ErrorAction Stop | ForEach-Object {
+					Copy-Item $_ "$thisWindowsResourcesPath\app-installers" -Recurse -Force -ErrorAction Stop
+				}
+			} else {
+				Write-Host "    NO APP INSTALLERS FOLDER" -ForegroundColor Yellow
 			}
 		} else {
-			Write-Host "    NO APP INSTALLERS FOLDER FOR $winPEorRE USB" -ForegroundColor Yellow
+			Write-Output "`n  Unmounting SMB Share `"$smbShare`"..."
+			Remove-SmbMapping -RemotePath $smbShare -Force -UpdateProfile -ErrorAction SilentlyContinue # Done with SMB Share now, so remove it.
 		}
-	} else {
-		Write-Host "`n`n  NO MEDIA FOLDER FOR $winPEorRE USB" -ForegroundColor Red
 	}
-} else {
-	Write-Host "`n`n  NOT ADDING RESOURCES TO BOOT FOLDER FOR STANDALONE $winPEorRE USB (WILL BE INCLUDED IN SEPARATE USB PARTITION)" -ForegroundColor Yellow
 }
 
 

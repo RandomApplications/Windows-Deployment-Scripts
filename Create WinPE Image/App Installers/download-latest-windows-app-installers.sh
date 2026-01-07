@@ -90,6 +90,11 @@ latest_firefox_download_url='https://download.mozilla.org/?product=firefox-msi-l
 latest_firefox_version="$(curl -m 5 -sfw '%{redirect_url}' -o /dev/null "${latest_firefox_download_url}" | awk -F '/' '{ print $7; exit }')"
 download_app_installer 'Firefox' 'msi' "${latest_firefox_version}" "${latest_firefox_download_url}"
 
+latest_chrome_version="$(curl -m 5 -sfL 'https://versionhistory.googleapis.com/v1/chrome/platforms/win64/channels/stable/versions/all/releases?filter=fraction=1' | awk -F '"' '($2 == "version") { print $4; exit }')" # https://developer.chrome.com/docs/web-platform/versionhistory/examples#release & https://developer.chrome.com/docs/web-platform/versionhistory/reference#filter & https://macadmins.slack.com/archives/C013HFTFQ13/p1701811746942389?thread_ts=1701685863.377489&cid=C013HFTFQ13
+latest_chrome_download_url='https://dl.google.com/chrome/install/googlechromestandaloneenterprise64.msi'
+# NOTE: It's important to download the offline MSI installer since the EXE installer would require internet when run, which we don't want to require for USB installations.
+download_app_installer 'Google Chrome' 'msi' "${latest_chrome_version}" "${latest_chrome_download_url}"
+
 latest_libreoffice_version="$(curl -m 5 -sfL 'https://download.documentfoundation.org/libreoffice/stable/' | awk -F '"|/' '/<td><a href="/ { latest_version = $5 } END { print latest_version }')"
 latest_libreoffice_download_url="https://download.documentfoundation.org/libreoffice/stable/${latest_libreoffice_version}/win/x86_64/LibreOffice_${latest_libreoffice_version}_Win_x86-64.msi"
 download_app_installer 'LibreOffice' 'msi' "${latest_libreoffice_version}" "${latest_libreoffice_download_url}"
@@ -115,11 +120,6 @@ fi
 cd 'Extra' || exit
 
 echo '----------'
-
-latest_chrome_version="$(curl -m 5 -sfL 'https://versionhistory.googleapis.com/v1/chrome/platforms/win64/channels/stable/versions/all/releases?filter=fraction=1' | awk -F '"' '($2 == "version") { print $4; exit }')" # https://developer.chrome.com/docs/web-platform/versionhistory/examples#release & https://developer.chrome.com/docs/web-platform/versionhistory/reference#filter & https://macadmins.slack.com/archives/C013HFTFQ13/p1701811746942389?thread_ts=1701685863.377489&cid=C013HFTFQ13
-latest_chrome_download_url='https://dl.google.com/chrome/install/googlechromestandaloneenterprise64.msi'
-# NOTE: It's important to download the offline MSI installer since the EXE installer would require internet when run, which we don't want to require for USB installations.
-download_app_installer 'Google Chrome' 'msi' "${latest_chrome_version}" "${latest_chrome_download_url}"
 
 latest_zoom_download_url='https://zoom.us/client/latest/ZoomInstallerFull.msi?archType=x64'
 latest_zoom_version="$(curl -m 5 -sfw '%{redirect_url}' -o /dev/null "${latest_zoom_download_url}" | awk -F '/' '{ print $5; exit }')"

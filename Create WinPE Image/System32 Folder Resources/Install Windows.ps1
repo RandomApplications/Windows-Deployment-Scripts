@@ -21,7 +21,7 @@
 # WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 #
 
-# Version: 2025.11.10-1
+# Version: 2025.12.29-1
 
 # PowerShell must be installed in WinPE to run this script (which will be taken care of automatically if WinPE is built with "Create WinPE Image.ps1"):
 # https://docs.microsoft.com/en-us/windows-hardware/manufacture/desktop/winpe-adding-powershell-support-to-windows-pe
@@ -30,7 +30,7 @@
 
 $Host.UI.RawUI.WindowTitle = 'Install Windows'
 
-if (((-not (Test-Path "$Env:SystemRoot\System32\startnet.cmd")) -and (-not (Test-Path "$Env:SystemRoot\System32\winpeshl.ini"))) -or (-not (Get-ItemProperty 'HKLM:\SYSTEM\Setup').FactoryPreInstallInProgress)) {
+if (((-not (Test-Path "$Env:SystemRoot\System32\startnet.cmd")) -and (-not (Test-Path "$Env:SystemRoot\System32\winpeshl.ini"))) -or (-not (Get-ItemProperty 'HKLM:\SYSTEM\Setup' -ErrorAction SilentlyContinue).FactoryPreInstallInProgress)) {
 	Write-Host "`n  ERROR: `"Install Windows`" Can Only Run In Windows Preinstallation Environment`n`n  EXITING IN 5 SECONDS..." -ForegroundColor Red
 	Start-Sleep 5
 	exit 1
@@ -61,7 +61,7 @@ $ipdtMode = (Test-Path "$Env:SystemRoot\System32\fgFLAG-IPDT") # This mode will 
 FocusScriptWindow
 
 $getKeyStateFunctionTypes = Add-Type -PassThru -Name GetKeyState -MemberDefinition @'
-[DllImport("user32.dll")] public static extern short GetAsyncKeyState(int virtualKeyCode); 
+[DllImport("user32.dll")] public static extern short GetAsyncKeyState(int virtualKeyCode);
 '@ # Based On: https://superuser.com/a/1578611
 
 if ((-not $testMode) -and ($getKeyStateFunctionTypes::GetAsyncKeyState([Byte][Char]'T') -eq -32767) -and ($getKeyStateFunctionTypes::GetAsyncKeyState('0x11') -eq -32767)) { # 0x11 = Control Key ("-32767" explanation: https://stackoverflow.com/a/60797678)
@@ -239,7 +239,9 @@ if ((Test-Path "$Env:SystemDrive\Install\Scripts\Wi-Fi Profiles\") -and (Test-Pa
 						$netshWlanAddProfileError = $netshWlanAddProfileError.Trim()
 					}
 
-					Write-Host "      ERROR ADDING PROFILE (Code $netshWlanAddProfileExitCode): $netshWlanAddProfileError" -ForegroundColor Red
+					if ($netshWlanAddProfileError -ne 'There is no wireless interface on the system.') { # Don't bother showing error message if is just "no wireless interface" error.
+						Write-Host "      ERROR ADDING PROFILE (Code $netshWlanAddProfileExitCode): $netshWlanAddProfileError" -ForegroundColor Red
+					}
 				}
 			} catch {
 				Write-Host ' FAILED' -NoNewline -ForegroundColor Red
@@ -289,25 +291,6 @@ if (Test-Path "$Env:SystemRoot\System32\W32tm.exe") {
 
 if (-not $didSyncSystemTime) {
 	Write-Host "`n  System Time May Be Incorrect - CONTINUING ANYWAY" -ForegroundColor Yellow
-}
-
-
-if (Test-Path "$Env:SystemDrive\Install\Scripts\Windows 11 Supported Processors Lists\SupportedProcessorsIntel.txt") {
-	Write-Output "`n`n  Updating Windows 11 Supported Processors Lists for WhyNotWin11..."
-
-	$whyNotWin11LocalAppDataFolderPath = "$Env:SystemRoot\System32\config\systemprofile\AppData\Local\WhyNotWin11" # This path is what WhyNotWin11 will in WinPE/RE, but $Env:LOCALAPPDATA is empty in WinPE/RE so must set the path manually.
-	if (Test-Path $whyNotWin11LocalAppDataFolderPath) {
-		Remove-Item $whyNotWin11LocalAppDataFolderPath -Recurse -Force -ErrorAction Stop
-	}
-
-	New-Item -ItemType 'Directory' -Path $whyNotWin11LocalAppDataFolderPath -ErrorAction Stop | Out-Null
-
-	Copy-Item "$Env:SystemDrive\Install\Scripts\Windows 11 Supported Processors Lists\SupportedProcessors*.txt" $whyNotWin11LocalAppDataFolderPath -Force -ErrorAction Stop
-
-	New-Item -ItemType 'Directory' -Path "$whyNotWin11LocalAppDataFolderPath\Langs" -ErrorAction Stop | Out-Null # If the "Langs" folder doesn't exist, WhyNotWin11 will overwrite the supported processor lists with its older embedded lists.
-	Set-Content "$whyNotWin11LocalAppDataFolderPath\Langs\version" '0' # The language version file must exist for WhyNotWin11 to copy in the language files. Setting the value to "0" so it will be a version that will always be outdated so WhyNotWin11 will update the language files.
-
-	Write-Host "`n  Successfully Updated Windows 11 Supported Processors Lists" -ForegroundColor Green
 }
 
 
@@ -488,8 +471,21 @@ for ( ; ; ) {
 			}
 
 			if ($testMode) {
-				Write-Host "`n  TEST MODE ENABLED (QA Helper in Test Mode)" -ForegroundColor Yellow
+				Write-Host "`n  Test Mode ENABLED by QA Helper" -ForegroundColor Yellow
+				Start-Sleep 2
 			}
+		}
+
+		$wasIPDTmode = $ipdtMode
+		$ipdtMode = ((Test-Path "$Env:SystemRoot\System32\fgFLAG-IPDT") -or (Test-Path "$Env:SystemDrive\Install\fgFLAG-IPDT")) # Also set installation to IPDT Mode if enabled from within QA Helper.
+		if ($wasIPDTmode -ne $ipdtMode) {
+			if ($ipdtMode) {
+				Write-Host "`n  IPDT (Intel Processor Diagnostic Tool) Mode ENABLED By QA Helper" -ForegroundColor Yellow
+			} else {
+				Write-Host "`n  IPDT (Intel Processor Diagnostic Tool) Mode DISABLED By QA Helper" -ForegroundColor Yellow
+			}
+
+			Start-Sleep 2
 		}
 	} else {
 		Write-Host "`n  ERROR: Failed to install QA Helper." -ForegroundColor Red
@@ -628,16 +624,16 @@ if (($null -eq $installDriveID) -or ($null -eq $installDriveName)) {
 	try {
 		[xml]$smbCredentialsXML = Get-Content "$Env:SystemDrive\Install\Scripts\smb-credentials.xml" -ErrorAction Stop
 
-		if ($null -eq $smbCredentialsXML.smbCredentials.resourcesReadOnlyShare.ip) {
-			throw 'NO RESOURCES SHARE IP'
+		if ($null -eq $smbCredentialsXML.smbCredentials.resourcesReadOnlyShare.address) {
+			throw 'NO RESOURCES SHARE ADDRESS'
 		} elseif ($null -eq $smbCredentialsXML.smbCredentials.resourcesReadOnlyShare.shareName) {
 			throw 'NO RESOURCES SHARE NAME'
 		} elseif ($null -eq $smbCredentialsXML.smbCredentials.resourcesReadOnlyShare.username) {
 			throw 'NO RESOURCES SHARE USERNAME'
 		} elseif ($null -eq $smbCredentialsXML.smbCredentials.resourcesReadOnlyShare.password) {
 			throw 'NO RESOURCES SHARE PASSWORD'
-		} elseif ($null -eq $smbCredentialsXML.smbCredentials.driversReadOnlyShare.ip) {
-			throw 'NO DRIVERS SHARE IP'
+		} elseif ($null -eq $smbCredentialsXML.smbCredentials.driversReadOnlyShare.address) {
+			throw 'NO DRIVERS SHARE ADDRESS'
 		} elseif ($null -eq $smbCredentialsXML.smbCredentials.driversReadOnlyShare.shareName) {
 			throw 'NO DRIVERS SHARE NAME'
 		} elseif ($null -eq $smbCredentialsXML.smbCredentials.driversReadOnlyShare.username) {
@@ -655,21 +651,22 @@ if (($null -eq $installDriveID) -or ($null -eq $installDriveName)) {
 		exit 7
 	}
 
-	$smbServerIP = $smbCredentialsXML.smbCredentials.resourcesReadOnlyShare.ip
-	$smbShare = "\\$smbServerIP\$($smbCredentialsXML.smbCredentials.resourcesReadOnlyShare.shareName)"
-	$smbUsername = "$smbServerIP\$($smbCredentialsXML.smbCredentials.resourcesReadOnlyShare.username)" # Domain must be prefixed in any username.
-	$smbPassword = $smbCredentialsXML.smbCredentials.resourcesReadOnlyShare.password
+	$smbDriversServerAddress = $smbCredentialsXML.smbCredentials.driversReadOnlyShare.address
+	$smbDriversShare = "\\$smbDriversServerAddress\$($smbCredentialsXML.smbCredentials.driversReadOnlyShare.shareName)"
+	$smbDriversUsername = "user\$($smbCredentialsXML.smbCredentials.driversReadOnlyShare.username)" # (This is the user that can READ ONLY) For some strange reason, in WinPE the username must be prefixed, but with anything EXCEPT the server name.
+	$smbDriversPassword = $smbCredentialsXML.smbCredentials.driversReadOnlyShare.password
 
-	$smbWdsServerIP = $smbCredentialsXML.smbCredentials.driversReadOnlyShare.ip
-	$smbWdsShare = "\\$smbWdsServerIP\$($smbCredentialsXML.smbCredentials.driversReadOnlyShare.shareName)"
-	$smbWdsUsername = "user\$($smbCredentialsXML.smbCredentials.driversReadOnlyShare.username)" # (This is the user that can READ ONLY) For some strange reason, in WinPE the username must be prefixed, but with anything EXCEPT the server name.
-	$smbWdsPassword = $smbCredentialsXML.smbCredentials.driversReadOnlyShare.password
+	$driversCacheBasePath = "$smbDriversShare\Cache"
+	$driverPacksBasePath = "$smbDriversShare\Packs"
 
-	$driversCacheBasePath = "$smbWdsShare\Drivers\Cache"
-	$driverPacksBasePath = "$smbWdsShare\Drivers\Packs"
+	$smbResourcesServerAddress = $smbCredentialsXML.smbCredentials.resourcesReadOnlyShare.address
+	$smbResourcesShare = "\\$smbResourcesServerAddress\$($smbCredentialsXML.smbCredentials.resourcesReadOnlyShare.shareName)"
+	$smbResourcesUsername = "$smbResourcesServerAddress\$($smbCredentialsXML.smbCredentials.resourcesReadOnlyShare.username)" # Domain must be prefixed in any username.
+	$smbResourcesPassword = $smbCredentialsXML.smbCredentials.resourcesReadOnlyShare.password
 
-	$osImagesSMBbasePath = "$smbShare\windows-resources\os-images"
-	$setupResourcesSMBbasePath = "$smbShare\windows-resources\setup-resources"
+	$osImagesSMBbasePath = "$smbResourcesShare\os-images"
+	$setupResourcesSMBbasePath = "$smbResourcesShare\setup-resources"
+	$appInstallersSMBpath = "$smbResourcesShare\app-installers"
 
 	# When in test mode (and local server is accessible), $osImagesSMBtestingPath will be checked first and $setupResourcesPath will be fallen back on if no test image is found.
 	# This way, we do not need to always store 2 duplicate os image files when no test image is needed.
@@ -742,7 +739,7 @@ if (($null -eq $installDriveID) -or ($null -eq $installDriveName)) {
 
 		$osImagesPath = "$osImagesSMBbasePath\production"
 		$setupResourcesPath = "$setupResourcesSMBbasePath\production"
-		$appInstallersPath = "$smbShare\windows-resources\app-installers"
+		$appInstallersPath = $appInstallersSMBpath
 
 		$usbResourcesAccessible = $false
 
@@ -759,15 +756,15 @@ if (($null -eq $installDriveID) -or ($null -eq $installDriveName)) {
 		$localServerResourcesAccessible = $false
 
 		try {
-			$localServerResourcesAccessible = (Test-Connection $smbServerIP -Count 1 -Quiet -ErrorAction Stop)
+			$localServerResourcesAccessible = (Test-Connection $smbResourcesServerAddress -Count 1 -Quiet -ErrorAction Stop)
 		} catch {
-			Write-Host "`n  ERROR CONNECTING TO LOCAL FREE GEEK SERVER: $_" -ForegroundColor Red
+			Write-Host "`n  ERROR CONNECTING TO LOCAL FREE GEEK SERVER FOR WINDOWS INSTALLATION IMAGES: $_" -ForegroundColor Red
 		}
 
 		if ($localServerResourcesAccessible) {
-			Write-Host "`n  Successfully Connected to Local Free Geek Server" -ForegroundColor Green
+			Write-Host "`n  Successfully Connected to Local Free Geek Server for Windows Installation Images" -ForegroundColor Green
 		} elseif (-not $usbResourcesAccessible) {
-			Write-Host "`n  ERROR: Failed to locate Windows on USB and failed connect to local Free Geek server." -ForegroundColor Red
+			Write-Host "`n  ERROR: Failed to locate Windows installation images on both USB and local Free Geek server." -ForegroundColor Red
 
 			$lastTaskSucceeded = $false
 		}
@@ -776,17 +773,22 @@ if (($null -eq $installDriveID) -or ($null -eq $installDriveName)) {
 			Write-Host "`n`n  Mounting SMB Share for Windows Installation Images - PLEASE WAIT, THIS MAY TAKE A MOMENT..." -NoNewline
 
 			# Try to connect to SMB Share 5 times before stopping to show error to user because sometimes it takes a few attempts, or it sometimes just fails and takes more manual reattempts before it finally works.
-			# These failures seemed to happen more often when using a guest/anonymous SMS Share in WinPE. I think WinPE just has issues with guest/anonymous SMB Shares, so we're using a password protected one instead.
+			# These failures seemed to happen more often when using a guest/anonymous SMB Share in WinPE. I think WinPE just has issues with guest/anonymous SMB Shares, so we're using a password protected one instead.
 			for ($smbMountAttempt = 0; $smbMountAttempt -lt 5; $smbMountAttempt ++) {
 				try {
 					# If we don't get the New-SmbMapping return value it seems to be asynchronous, which results in messages being show out of order result and also result in a failure not being detected.
-					$smbMappingStatus = (New-SmbMapping -RemotePath $smbShare -UserName $smbUsername -Password $smbPassword -Persistent $false -ErrorAction Stop).Status
-					$smbWdsMappingStatus = (New-SmbMapping -RemotePath $smbWdsShare -UserName $smbWdsUsername -Password $smbWdsPassword -Persistent $false -ErrorAction Stop).Status
+					$smbResourcesMappingStatus = (New-SmbMapping -RemotePath $smbResourcesShare -UserName $smbResourcesUsername -Password $smbResourcesPassword -Persistent $false -ErrorAction Stop).Status
 
-					if (($smbMappingStatus -eq 0) -and ($smbWdsMappingStatus -eq 0)) {
-						Write-Host "`n`n  Successfully Mounted SMB Share for Windows Installation Images" -ForegroundColor Green
+					if ($smbResourcesMappingStatus -eq 0) {
+						Start-Sleep ($smbMountAttempt + 1) # Sleep a little longer after each attempt.
+						if ((Test-Path $osImagesSMBbasePath) -and (Test-Path $setupResourcesSMBbasePath) -and (Test-Path $appInstallersSMBpath)) {
+							Write-Host "`n`n  Successfully Mounted SMB Share for Windows Installation Images" -ForegroundColor Green
+						} else {
+							Remove-SmbMapping -RemotePath $smbResourcesShare -Force -UpdateProfile -ErrorAction SilentlyContinue
+							throw 'Failed to Located Base Resources Paths'
+						}
 					} else {
-						throw "SMB Mapping Status $smbMappingStatus + $smbWdsMappingStatus"
+						throw "SMB Mapping Status $smbResourcesMappingStatus"
 					}
 
 					break
@@ -795,18 +797,21 @@ if (($null -eq $installDriveID) -or ($null -eq $installDriveName)) {
 						Write-Host '.' -NoNewline
 						Start-Sleep ($smbMountAttempt + 1) # Sleep a little longer after each attempt.
 					} else {
-						Write-Host "`n`n  ERROR MOUNTING SMB SHARE: $_" -ForegroundColor Red
-						Write-Host "`n  ERROR: Failed to connect to local Free Geek SMB share." -ForegroundColor Red
+						Write-Host "`n`n  ERROR MOUNTING SMB SHARE FOR WINDOWS INSTALLATION IMAGES: $_" -ForegroundColor Red
+						Write-Host "`n  ERROR: Failed to connect to local Free Geek SMB share `"$smbResourcesShare`" for Windows installation images." -ForegroundColor Red
 
-						$lastTaskSucceeded = $false
+						$localServerResourcesAccessible = $false
+
+						if (-not $usbResourcesAccessible) {
+							$lastTaskSucceeded = $false
+						}
 					}
 				}
 			}
 		}
 
 		if (-not $lastTaskSucceeded) {
-			Write-Host "`n`n  IMPORTANT: Unplug and re-plug the USB drive and try again. " -ForegroundColor Red
-			Write-Host "`n  ALSO IMPORTANT: Make sure Ethernet cable is plugged securely and try again." -ForegroundColor Yellow
+			Write-Host "`n`n  IMPORTANT: Unplug and re-plug the USB drive and try again.`n`n  ALSO IMPORTANT: Make sure Ethernet cable is plugged securely and try again." -ForegroundColor Yellow
 		}
 
 		if (-not $didInstallWindowsImage) {
@@ -881,18 +886,23 @@ if (($null -eq $installDriveID) -or ($null -eq $installDriveName)) {
 
 					Remove-Item "$Env:TEMP\fgInstall-*.txt" -Force -ErrorAction SilentlyContinue
 
-					# Run "Wpeutil UpdateBootInfo" before checking PEFirmwareType (seems unnecessary in testing, but sample code does it and doesn't hurt).
+					# Run "Wpeutil UpdateBootInfo" before checking firmware type (seems unnecessary in testing, but sample code does it and doesn't hurt).
 					Start-Process 'Wpeutil' -NoNewWindow -Wait -RedirectStandardOutput "$Env:TEMP\fgInstall-Wpeutil-UpdateBootInfo-Output.txt" -RedirectStandardError "$Env:TEMP\fgInstall-Wpeutil-UpdateBootInfo-Error.txt" -ArgumentList 'UpdateBootInfo' -ErrorAction Stop # RedirectStandardOutput just so it doesn't show in window.
 					$wpeutilUpdateBootInfoError = Get-Content -Raw "$Env:TEMP\fgInstall-Wpeutil-UpdateBootInfo-Error.txt"
 
-					$peFirmwareType = (Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control').PEFirmwareType
-					if ($peFirmwareType -eq 1) {
-						$biosOrUEFI = 'Legacy BIOS'
-					} elseif ($peFirmwareType -eq 2) {
-						$biosOrUEFI = 'UEFI'
+					$biosOrUEFI = $Env:firmware_type
+					if (($null -eq $biosOrUEFI) -or ($biosOrUEFI -eq '')) { # "$Env:firmware_type" should always be set in WinPE/WinRE, but include a fallback to "PEFirmwareType" from registry just in case since that is what the sample code used.
+						$peFirmwareType = (Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control').PEFirmwareType
+						if ($peFirmwareType -eq 1) {
+							$biosOrUEFI = 'Legacy BIOS'
+						} elseif ($peFirmwareType -eq 2) {
+							$biosOrUEFI = 'UEFI'
+						}
+					} elseif ($biosOrUEFI -eq 'Legacy') {
+						$biosOrUEFI += ' BIOS'
 					}
 
-					if (($null -ne $biosOrUEFI) -and ($null -eq $wpeutilUpdateBootInfoError)) {
+					if (($null -eq $wpeutilUpdateBootInfoError) -and ($null -ne $biosOrUEFI) -and (($biosOrUEFI -eq 'UEFI') -or ($biosOrUEFI -eq 'Legacy BIOS'))) {
 						Write-Host "`n  This Computer Is Booted in $biosOrUEFI Mode" -ForegroundColor Green
 					} else {
 						if ($null -eq $wpeutilUpdateBootInfoError) {
@@ -900,7 +910,7 @@ if (($null -eq $installDriveID) -or ($null -eq $installDriveName)) {
 						}
 
 						Write-Host "`n  ERROR LOADING BOOT INFO: $wpeutilUpdateBootInfoError" -ForegroundColor Red
-						Write-Host "`n  ERROR: Failed to detect whether this computer is booted in Legacy BIOS or UEFI mode (PEFirmwareType = $peFirmwareType)." -ForegroundColor Red
+						Write-Host "`n  ERROR: Failed to detect whether this computer is booted in Legacy BIOS or UEFI mode (biosOrUEFI = `"$biosOrUEFI`")." -ForegroundColor Red
 
 						$lastTaskSucceeded = $false
 					}
@@ -916,6 +926,8 @@ if (($null -eq $installDriveID) -or ($null -eq $installDriveName)) {
 			$installWimPath = $null
 			$installWimDisplayName = $null
 
+			$cpuInfo = (Get-CimInstance 'Win32_Processor' -Property 'AddressWidth', 'NumberOfLogicalProcessors', 'Architecture', 'Manufacturer', 'Name' -ErrorAction SilentlyContinue)
+
 			if ($lastTaskSucceeded) {
 				Start-Sleep 3 # Sleep for a few seconds to be able to see last results before clearing screen.
 
@@ -928,166 +940,278 @@ if (($null -eq $installDriveID) -or ($null -eq $installDriveName)) {
 					Clear-Host
 					Write-Output "`n  Detecting If This Computer Supports Windows 11...`n" # https://www.microsoft.com/en-us/windows/windows-11-specifications
 
-					$tpmSpecVersionString = (Get-CimInstance 'Win32_TPM' -Namespace 'ROOT\CIMV2\Security\MicrosoftTPM' -ErrorAction SilentlyContinue).SpecVersion
-					$win11compatibleTPM = $false
+					$win11compatibleArchitecture = ($cpuInfo.AddressWidth -eq 64)
+					$win11compatibleCPUcores = ($cpuInfo.NumberOfLogicalProcessors -ge 2)
+					# NOTE: DO NOT check "MaxClockSpeed" because sometimes the detected speed is inaccurate and under 1 Ghz which would cause the check to fail even though the CPU is otherwise compatible and is actually faster.
 
-					if ($null -ne $tpmSpecVersionString) {
-						$tpmSpecVersionString = $tpmSpecVersionString.Split(',')[0] # Use the first value in the "SpecVersion" comma separated string instead of "PhysicalPresenseVersionInfo" since the latter can be inaccurate when the former is correct.
-						$win11compatibleTPM = ((($tpmSpecVersionString -Replace '[^0-9.]', '') -as [double]) -ge 2.0)
-					} else {
-						$tpmSpecVersionString = 'UNKNOWN'
+					# The following CPU Family Validation code comes directly from "HardwareReadiness.ps1" (https://aka.ms/HWReadinessScript) by Microsoft.
+					# https://techcommunity.microsoft.com/blog/microsoftintuneblog/understanding-readiness-for-windows-11-with-microsoft-endpoint-manager/2770866
+					# Also, other checks are based on or adapted from the checks in "HardwareReadiness.ps1" as well as original code.
+
+					# Code from "HardwareReadiness.ps1" is MIT Licensed: Copyright (c) 2021 Microsoft Corporation
+
+					# Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation
+					# files (the "Software"), to deal in the Software without restriction, including without limitation the rights to use, copy,
+					# modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software
+					# is furnished to do so, subject to the following conditions:
+
+					# The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.
+
+					# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE
+					# WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR
+					# COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
+					# ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+					Add-Type -TypeDefinition @'
+using Microsoft.Win32;
+using System;
+using System.Runtime.InteropServices;
+
+public class CpuFamilyResult {
+	public bool IsValid { get; set; }
+	public string Message { get; set; }
+}
+
+public class CpuFamily {
+	[StructLayout(LayoutKind.Sequential)]
+	public struct SYSTEM_INFO {
+		public ushort ProcessorArchitecture;
+		ushort Reserved;
+		public uint PageSize;
+		public IntPtr MinimumApplicationAddress;
+		public IntPtr MaximumApplicationAddress;
+		public IntPtr ActiveProcessorMask;
+		public uint NumberOfProcessors;
+		public uint ProcessorType;
+		public uint AllocationGranularity;
+		public ushort ProcessorLevel;
+		public ushort ProcessorRevision;
+	}
+
+	[DllImport("kernel32.dll")]
+	internal static extern void GetNativeSystemInfo(ref SYSTEM_INFO lpSystemInfo);
+
+	public enum ProcessorFeature : uint {
+		ARM_SUPPORTED_INSTRUCTIONS = 34
+	}
+
+	[DllImport("kernel32.dll")]
+	[return: MarshalAs(UnmanagedType.Bool)]
+	static extern bool IsProcessorFeaturePresent(ProcessorFeature processorFeature);
+
+	private const ushort PROCESSOR_ARCHITECTURE_X86 = 0;
+	private const ushort PROCESSOR_ARCHITECTURE_ARM64 = 12;
+	private const ushort PROCESSOR_ARCHITECTURE_X64 = 9;
+
+	private const string INTEL_MANUFACTURER = "GenuineIntel";
+	private const string AMD_MANUFACTURER = "AuthenticAMD";
+	private const string QUALCOMM_MANUFACTURER = "Qualcomm Technologies Inc";
+
+	public static CpuFamilyResult Validate(string manufacturer, ushort processorArchitecture) {
+		CpuFamilyResult cpuFamilyResult = new CpuFamilyResult();
+
+		if (string.IsNullOrWhiteSpace(manufacturer)) {
+			cpuFamilyResult.IsValid = false;
+			cpuFamilyResult.Message = "Manufacturer is null or empty";
+			return cpuFamilyResult;
+		}
+
+		string registryPath = "HKEY_LOCAL_MACHINE\\Hardware\\Description\\System\\CentralProcessor\\0";
+		SYSTEM_INFO sysInfo = new SYSTEM_INFO();
+		GetNativeSystemInfo(ref sysInfo);
+
+		switch (processorArchitecture) {
+			case PROCESSOR_ARCHITECTURE_ARM64:
+
+				if (manufacturer.Equals(QUALCOMM_MANUFACTURER, StringComparison.OrdinalIgnoreCase)) {
+					bool isArmv81Supported = IsProcessorFeaturePresent(ProcessorFeature.ARM_SUPPORTED_INSTRUCTIONS);
+
+					if (!isArmv81Supported) {
+						string registryName = "CP 4030";
+						long registryValue = (long)Registry.GetValue(registryPath, registryName, -1);
+						long atomicResult = (registryValue >> 20) & 0xF;
+
+						if (atomicResult >= 2) {
+							isArmv81Supported = true;
+						}
 					}
 
-					# Check for SSE4.2 support (even though it should be supported on every compatible CPU): https://www.tomshardware.com/software/windows/microsoft-updates-windows-11-24h2-requirements-cpu-must-support-sse42-or-the-os-will-not-boot
-					$processorFeatureFunctionTypes = Add-Type -PassThru -Name ProcessorFeature -MemberDefinition @'
-[DllImport("kernel32")]
-public static extern bool IsProcessorFeaturePresent(uint ProcessorFeature);
-'@ # Based On: https://superuser.com/a/1861418
+					cpuFamilyResult.IsValid = isArmv81Supported;
+					cpuFamilyResult.Message = isArmv81Supported ? "" : "Processor does not implement ARM v8.1 atomic instruction";
+				} else {
+					cpuFamilyResult.IsValid = false;
+					cpuFamilyResult.Message = "The processor isn't currently supported for Windows 11";
+				}
 
-					$win11compatibleSSE4dot2 = $processorFeatureFunctionTypes::IsProcessorFeaturePresent(38) # 38 = PF_SSE4_2_INSTRUCTIONS_AVAILABLE
+				break;
 
-					$win11compatibleStorage = $false
-					if ((Get-Disk $installDriveID -ErrorAction SilentlyContinue).Size -ge 55GB) {
-						# NOT using "Storage Available" from WhyNotWin11 below because it will be inaccurate since it will be checking the storage of the booted RAM disk.
-						# Allowing 55 GB or more since some drives marketed as 64 GB (the specified requirement) can be a few GB under (seen first hand a drive marketed as 64 GB actually be 58 GB, but give a little more leeway than that just to be sure all drives marketed as 64 GB are allowed).
-						$win11compatibleStorage = $true
+			case PROCESSOR_ARCHITECTURE_X64:
+			case PROCESSOR_ARCHITECTURE_X86:
+
+				int cpuFamily = sysInfo.ProcessorLevel;
+				int cpuModel = (sysInfo.ProcessorRevision >> 8) & 0xFF;
+				int cpuStepping = sysInfo.ProcessorRevision & 0xFF;
+
+				if (manufacturer.Equals(INTEL_MANUFACTURER, StringComparison.OrdinalIgnoreCase)) {
+					try {
+						cpuFamilyResult.IsValid = true;
+						cpuFamilyResult.Message = "";
+
+						if (cpuFamily >= 6 && cpuModel <= 95 && !(cpuFamily == 6 && cpuModel == 85)) {
+							cpuFamilyResult.IsValid = false;
+							cpuFamilyResult.Message = "";
+						} else if (cpuFamily == 6 && (cpuModel == 142 || cpuModel == 158) && cpuStepping == 9) {
+							string registryName = "Platform Specific Field 1";
+							int registryValue = (int)Registry.GetValue(registryPath, registryName, -1);
+
+							if ((cpuModel == 142 && registryValue != 16) || (cpuModel == 158 && registryValue != 8)) {
+								cpuFamilyResult.IsValid = false;
+							}
+							cpuFamilyResult.Message = "PlatformId " + registryValue;
+						}
+					} catch (Exception ex) {
+						cpuFamilyResult.IsValid = false;
+						cpuFamilyResult.Message = "Exception:" + ex.GetType().Name;
+					}
+				} else if (manufacturer.Equals(AMD_MANUFACTURER, StringComparison.OrdinalIgnoreCase)) {
+					cpuFamilyResult.IsValid = true;
+					cpuFamilyResult.Message = "";
+
+					if (cpuFamily < 23 || (cpuFamily == 23 && (cpuModel == 1 || cpuModel == 17))) {
+						cpuFamilyResult.IsValid = false;
+					}
+				} else {
+					cpuFamilyResult.IsValid = false;
+					cpuFamilyResult.Message = "Unsupported Manufacturer: " + manufacturer + ", Architecture: " + processorArchitecture + ", CPUFamily: " + sysInfo.ProcessorLevel + ", ProcessorRevision: " + sysInfo.ProcessorRevision;
+				}
+
+				break;
+
+			default:
+				cpuFamilyResult.IsValid = false;
+				cpuFamilyResult.Message = "Unsupported CPU category. Manufacturer: " + manufacturer + ", Architecture: " + processorArchitecture + ", CPUFamily: " + sysInfo.ProcessorLevel + ", ProcessorRevision: " + sysInfo.ProcessorRevision;
+				break;
+		}
+
+		return cpuFamilyResult;
+	}
+}
+'@
+
+					$win11validateCPUmodelResult = [CpuFamily]::Validate([String]$cpuInfo.Manufacturer, [uint16]$cpuInfo.Architecture)
+					$win11compatibleCPUmodel = $win11validateCPUmodelResult.IsValid
+					$win11incompatibleCPUmodelMessage = $win11validateCPUmodelResult.Message
+
+					# "HardwareReadiness.ps1" also has a specific override check to allow the i7-7820HQ CPU when it is in a Surface Studio 2 or Precision 5520, so also include this override.
+					if ((-not $win11compatibleCPUmodel) -and ($null -ne $cpuInfo.Name) -and $cpuInfo.Name.ToLower().Contains('i7-7820hq cpu @ 2.90ghz')) {
+						$computerSystemModel = (Get-CimInstance 'Win32_ComputerSystem' -Property 'Model').Model
+						$win11compatibleCPUmodel = (($null -ne $computerSystemModel) -and (@('surface studio 2', 'precision 5520') -contains $computerSystemModel.Trim().ToLower()))
 					}
 
-					$eleventhToThirteenthGenIntelCPU = $false
-					$cpuInfo = (Get-CimInstance 'Win32_Processor' -Property 'Manufacturer', 'Name' -ErrorAction SilentlyContinue)
-					if ($cpuInfo.Manufacturer -and $cpuInfo.Name -and $cpuInfo.Manufacturer.ToUpper().Contains('INTEL') -and $cpuInfo.Name.ToUpper().Contains(' GEN ')) {
-						# "Manufacturer" should be "GenuineIntel" for all Intel processors, but do a case-insenstive check anything that contains "INTEL" just to be safe.
-						# Only 11th-13th Gen Intel CPUs contain " Gen " in their model name strings, and they will always be compatible with Windows 11.
-						# This boolean will be used as a fallback to the "win11compatibleCPUmodel" check done by WhyNotWin11 below in case WhyNotWin11
-						# is not updated promptly and we run into a newer CPU that is not yet in the WhyNotWin11 list of compatible CPUs.
-						$eleventhToThirteenthGenIntelCPU = $true
-					}
+					$totalRAMbytes = (Get-CimInstance 'Win32_PhysicalMemory' -Filter 'TypeDetail <> "4096"' -Property 'Capacity' -ErrorAction SilentlyContinue | Measure-Object -Property 'Capacity' -Sum -ErrorAction SilentlyContinue).Sum
+					# NOTE: Filter for only TypeDetail NOT EQUALS 4096 (Non-Volatile): https://docs.microsoft.com/en-us/windows/win32/cimwin32prov/win32-physicalmemory
+					$win11compatibleRAM = ($totalRAMbytes -ge 4GB)
+					$win11recommendedRAM = ($totalRAMbytes -ge 8GB)
 
-					if (Test-Path "$Env:SystemDrive\Install\Diagnostic Tools\WhyNotWin11.exe") { # Use WhyNotWin11 to help detect if the exact CPU model is compatible and more: https://github.com/rcmaehl/WhyNotWin11
-						Remove-Item "$Env:SystemDrive\Install\WhyNotWin11 Log.csv" -Force -ErrorAction SilentlyContinue
-						Start-Process "$Env:SystemDrive\Install\Diagnostic Tools\WhyNotWin11.exe" -NoNewWindow -Wait -ArgumentList '/export', 'CSV', "`"$Env:SystemDrive\Install\WhyNotWin11 Log.csv`"", '/skip', 'CPUFreq,Disk,Storage', '/silent', '/force' -ErrorAction SilentlyContinue
-					}
+					$installDriveBytes = (Get-Disk $installDriveID -ErrorAction SilentlyContinue).Size
+					$win11compatibleStorage = ($installDriveBytes -ge 55GB)
+					# Allowing 55 GB or more since some drives marketed as 64 GB (the specified requirement) can be a few GB under (seen first hand a drive marketed as 64 GB actually be 58 GB, but give a little more leeway than that just to be sure all drives marketed as 64 GB are allowed).
+					$win11recommendedStorage = ($installDriveBytes -ge 95GB)
 
-					$win11compatibleArchitecture = $false
-					$win11compatibleBootMethod = $false
-					$win11compatibleCPUmodel = $false
-					$win11compatibleCPUcores = $false
-					$win11compatibleGPU = $false
-					$win11compatibleRAM = $false
+					$win11compatibleBootMethod = ($biosOrUEFI -eq 'UEFI')
+
 					$win11compatibleSecureBoot = $false
-					$win11compatibleTPMfromWhyNotWin11 = $false
-					$checkedWithWhyNotWin11 = $false
+					$win11recommendedSecureBoot = $false
+					if ($win11compatibleBootMethod) {
+						$uefiSecureBootEnabled = (Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\SecureBoot\State' -ErrorAction SilentlyContinue).UEFISecureBootEnabled
+						# NOTE: "Confirm-SecureBootUEFI" cmdlet is not available in WinPE/WinRE, so check the registry like WhyNotWin11 does (https://github.com/rcmaehl/WhyNotWin11/blob/bdfcf8d2bf315ba80700111a27894422c5621dca/includes/_Checks.au3#L411-L420)
 
-					if (Test-Path "$Env:SystemDrive\Install\WhyNotWin11 Log.csv") {
-						$whyNotWin11LogLastLine = Get-Content "$Env:SystemDrive\Install\WhyNotWin11 Log.csv" -Last 1
+						$win11compatibleSecureBoot = (($uefiSecureBootEnabled -eq 1) -or ($uefiSecureBootEnabled -eq 0))
+						# Secure Boot DOES NOT need to be enabled, the computer just needs to be Secure Boot capable (following quote from: https://support.microsoft.com/en-us/windows/windows-11-and-secure-boot-a8ff1202-c0d9-42f5-940f-843abef64fad):
+						# "While the requirement to upgrade a Windows 10 device to Windows 11 is only that the PC be Secure Boot capable by having UEFI/BIOS enabled, you may also consider enabling or turning Secure Boot on for better security."
 
-						if ($null -ne $whyNotWin11LogLastLine) {
-							$whyNotWin11LogValues = $whyNotWin11LogLastLine.Split(',')
-
-							if ($whyNotWin11LogValues.Count -eq 12) {
-								# Index 0 is "Hostname" which is not useful for these Windows 11 compatibility checks.
-								$win11compatibleArchitecture = ($whyNotWin11LogValues[1] -eq 'True')
-								$win11compatibleBootMethod = ($whyNotWin11LogValues[2] -eq 'True')
-								$win11compatibleCPUmodel = ($whyNotWin11LogValues[3] -eq 'True')
-								$win11compatibleCPUcores = ($whyNotWin11LogValues[4] -eq 'True')
-								# Index 5 is "CPU Frequency" which we are ignoring (and also SKIPPED with arguments in the command above) because sometimes the detected speed is inaccurate and under 1 Ghz which causes this check to fail even though the CPU is in the compatible list and is actually faster.
-								$win11compatibleGPU = ($whyNotWin11LogValues[6] -eq 'True') # Since WhyNotWin11 v2.7, "DirectX + WDDM2" can be detected in WinPE since it checks PCI IDs directly and will only do a driver check in fully installed OS if PCI ID check fails.
-								# Index 7 is "Disk Partition Type" which will be inaccurate (and also SKIPPED with arguments in the command above) since will be checking the partition type of the booted RAM disk, but the drive formatting in this script will only ever create compatible GPT partitions when in UEFI mode. (Starting in WhyNotWin11 v2.7, this check would always PASS in WinPE which is correct for us, but means we still don't need to check it.)
-								$win11compatibleRAM = ($whyNotWin11LogValues[8] -eq 'True')
-								$win11compatibleSecureBoot = ($whyNotWin11LogValues[9] -eq 'True')
-								# Index 10 is "Storage Available" which will be inaccurate (and also SKIPPED with arguments in the command above) since will be checking the storage of the booted RAM disk, but the install drive size is checked manually above to be sure it's 64 GB or more. (Starting in WhyNotWin11 v2.7, ALL available drives will be checked when in WinPE and PASS if any suitable drive is found, which is useful for the WhyNotWin11 GUI, but for this script we will still manually check the size of specifically selected install drive.)
-								$win11compatibleTPMfromWhyNotWin11 = ($whyNotWin11LogValues[11] -eq 'True') # We already manually checked TPM version, but doesn't hurt to confirm that WinNotWin11 agrees.
-
-								$checkedWithWhyNotWin11 = $true
-							}
-						}
+						$win11recommendedSecureBoot = ($uefiSecureBootEnabled -eq 1)
 					}
 
-					if ($checkedWithWhyNotWin11) {
-						Write-Host '    CPU Compatible: ' -NoNewline
-
-						if (-not $win11compatibleSSE4dot2) {
-							Write-Host 'NO (SSE 4.2 Support REQUIRED)' -ForegroundColor Red
-						} elseif (-not $win11compatibleCPUcores) {
-							Write-Host 'NO (At Least Dual-Core REQUIRED)' -ForegroundColor Red
-						} elseif (-not $win11compatibleArchitecture) {
-							# This incompatibility should never happen since we only refurbish 64-bit processors and only have 64-bit Windows installers.
-							Write-Host 'NO (64-bit REQUIRED)' -ForegroundColor Red
-						} elseif (-not $win11compatibleCPUmodel) {
-							if ($eleventhToThirteenthGenIntelCPU) {
-								Write-Host 'YES' -NoNewline -ForegroundColor Green
-								Write-Host ' (Fallback Check Passed)' -ForegroundColor Yellow
-							} else {
-								Write-Host 'NO (Model NOT Supported)' -ForegroundColor Red
-							}
-						} else {
-							Write-Host 'YES' -ForegroundColor Green
+					$win11compatibleTPM = $false
+					$tpmSpecVersionString = (Get-CimInstance 'Win32_TPM' -Namespace 'ROOT\CIMV2\Security\MicrosoftTPM' -ErrorAction SilentlyContinue).SpecVersion # NOTE: "Get-Tpm" cmdlet is not available in WinPE/WinRE.
+					if ($null -ne $tpmSpecVersionString) {
+						$tpmSpecVersionString = ([string[]](($tpmSpecVersionString -Replace '[^0-9.,]', '').Split(',') | Sort-Object -Descending { [version]$_ } -ErrorAction SilentlyContinue))[0] # Use the highest value in the "SpecVersion" comma separated string instead of "PhysicalPresenseVersionInfo" since the latter can be inaccurate when the former is correct.
+						if ($tpmSpecVersionString -eq '') {
+							$tpmSpecVersionString = '0.0'
+						} elseif (-not $tpmSpecVersionString.Contains('.')) {
+							$tpmSpecVersionString += '.0'
 						}
+						$win11compatibleTPM = ([version]$tpmSpecVersionString -ge [version]'2.0')
+					}
 
-						Write-Host '    RAM 4 GB or More: ' -NoNewline
-						if ($win11compatibleRAM) {
-							Write-Host 'YES' -ForegroundColor Green
-						} else {
-							Write-Host 'NO (At Least 4 GB REQUIRED)' -ForegroundColor Red
-							Write-Host '      YOU MAY BE ABLE TO REPLACE OR ADD MORE RAM' -ForegroundColor Yellow
+					Write-Host '    CPU Compatible: ' -NoNewline
+					if (-not $win11compatibleArchitecture) {
+						# This incompatibility should never happen since we only refurbish 64-bit processors and only have 64-bit Windows installers.
+						Write-Host 'NO (64-bit REQUIRED)' -ForegroundColor Red
+					} elseif (-not $win11compatibleCPUcores) {
+						Write-Host 'NO (At Least Dual-Core REQUIRED)' -ForegroundColor Red
+					} elseif (-not $win11compatibleCPUmodel) {
+						Write-Host 'NO (Model NOT Supported)' -ForegroundColor Red
+						if (($null -ne $win11incompatibleCPUmodelMessage) -and ($win11incompatibleCPUmodelMessage -ne '')) {
+							Write-Host "      $win11incompatibleCPUmodelMessage" -ForegroundColor Yellow
 						}
 					} else {
-						Write-Host '    CPU Compatible: ' -NoNewline
-						Write-Host 'UNKNOWN' -ForegroundColor Red
-						Write-Host '      WhyNotWin11 CHECK FAILED - THIS SHOULD NOT HAVE HAPPENED - Please inform Free Geek I.T.' -ForegroundColor Red
-
-						Write-Host '    RAM 4 GB or More: ' -NoNewline
-						Write-Host 'UNKNOWN' -ForegroundColor Red
-						Write-Host '      WhyNotWin11 CHECK FAILED - THIS SHOULD NOT HAVE HAPPENED - Please inform Free Geek I.T.' -ForegroundColor Red
-					}
-
-					Write-Host '    Storage 64 GB or More: ' -NoNewline
-					if ($win11compatibleStorage) {
 						Write-Host 'YES' -ForegroundColor Green
+					}
+
+					Write-Host "`n    RAM 4 GB or More: " -NoNewline
+					if (-not $win11compatibleRAM) {
+						Write-Host "NO ($([math]::Round($totalRAMbytes / 1000 / 1000 / 1000)) GB Installed, At Least 4 GB REQUIRED, 8 GB RECOMMENDED)" -ForegroundColor Red
+						Write-Host '      YOU MAY BE ABLE TO REPLACE OR ADD MORE RAM' -ForegroundColor Yellow
+					} elseif (-not $win11recommendedRAM) {
+						Write-Host 'YES' -NoNewline -ForegroundColor Green
+						Write-Host " ($([math]::Round($totalRAMbytes / 1000 / 1000 / 1000)) GB Installed, At Least 8 GB RECOMMENDED)" -ForegroundColor Blue
+						Write-Host '      YOU MAY BE ABLE TO REPLACE OR ADD MORE RAM' -ForegroundColor Yellow
 					} else {
-						Write-Host 'NO (At Least 64 GB REQUIRED)' -ForegroundColor Red
+						Write-Host 'YES' -ForegroundColor Green
+					}
+
+					Write-Host "`n    Storage 64 GB or More: " -NoNewline
+					if (-not $win11compatibleStorage) {
+						Write-Host "NO ($([math]::Round($installDriveBytes / 1000 / 1000 / 1000)) GB Installed, At Least 64 GB REQUIRED, 128 GB RECOMMENDED)" -ForegroundColor Red
 						Write-Host '      YOU MAY BE ABLE TO REPLACE THIS WITH A LARGER DRIVE' -ForegroundColor Yellow
-					}
-
-					Write-Host '    GPU Compatible: ' -NoNewline
-					if ($win11compatibleGPU) { # Show compatibility if passes,
+					} elseif (-not $win11recommendedStorage) {
+						Write-Host 'YES' -NoNewline -ForegroundColor Green
+						Write-Host " ($([math]::Round($installDriveBytes / 1000 / 1000 / 1000)) GB Installed, At Least 128 GB RECOMMENDED)" -ForegroundColor Blue
+						Write-Host '      YOU MAY BE ABLE TO REPLACE THIS WITH A LARGER DRIVE' -ForegroundColor Yellow
+					} else {
 						Write-Host 'YES' -ForegroundColor Green
-					} else { # but only show warning if failed to check again in installed OS (which will check with the GPU drivers) and DO NOT block installation.
-						Write-Host 'WILL DETECT AFTER INSTALLATION' -ForegroundColor Yellow
-						Write-Host '      DIRECTX 12 OR LATER WITH WDDM 2.0 DRIVER IS REQUIRED' -ForegroundColor Yellow
-						Write-Host '      BUT CANNOT DETECT THAT UNTIL GPU DRIVERS ARE INSTALLED' -ForegroundColor Yellow
 					}
 
-					Write-Host '    UEFI Enabled: ' -NoNewline
-					if ($biosOrUEFI -ne 'UEFI') {
+					Write-Host "`n    GPU Compatible: " -NoNewline
+					Write-Host 'WILL DETECT AFTER INSTALLATION' -ForegroundColor Yellow
+					Write-Host '      AT LEAST DIRECTX 12 WITH WDDM 2.0 DRIVER IS REQUIRED' -ForegroundColor Yellow
+					Write-Host '      BUT CANNOT DETECT THAT UNTIL GPU DRIVERS ARE INSTALLED' -ForegroundColor Yellow
+
+					Write-Host "`n    UEFI Enabled: " -NoNewline
+					if (-not $win11compatibleBootMethod) {
 						Write-Host 'NO (Booted in Legacy BIOS Mode)' -ForegroundColor Red
 						Write-Host '      YOU MAY BE ABLE TO ENABLE UEFI BOOTING IN THE UEFI/BIOS SETUP' -ForegroundColor Yellow
 					} elseif (-not $win11compatibleSecureBoot) {
-						# Secure Boot DOES NOT need to be enabled, the computer just needs to be Secure Boot capable (following quote from: https://support.microsoft.com/en-us/windows/windows-11-and-secure-boot-a8ff1202-c0d9-42f5-940f-843abef64fad):
-						# "While the requirement to upgrade a Windows 10 device to Windows 11 is only that the PC be Secure Boot capable by having UEFI/BIOS enabled, you may also consider enabling or turning Secure Boot on for better security."
-						# And WhyNotWin11 only verifies that the computer is Secure Boot capable, not that it is enabled: https://github.com/rcmaehl/WhyNotWin11/blob/16123e4e891e9ba90c23cffccd5876d7ab2cfef3/includes/_Checks.au3#L219 & https://github.com/rcmaehl/WhyNotWin11/blob/1a2459a8cfc754644af7e94f33762eaaca544a07/includes/WhyNotWin11_accessibility.au3#L223
-						Write-Host 'NO (NOT Secure Boot Capable)' -ForegroundColor Red
+						Write-Host 'NO (Secure Boot Capability REQUIRED)' -ForegroundColor Red
 						Write-Host '      YOU MAY BE ABLE TO ENABLE SECURE BOOT CAPABILITY IN THE UEFI/BIOS SETUP' -ForegroundColor Yellow
+					} elseif (-not $win11recommendedSecureBoot) {
+						Write-Host 'YES' -NoNewline -ForegroundColor Green
+						Write-Host ' (Enabling Secure Boot RECOMMENDED)' -ForegroundColor Blue
+						Write-Host '      YOU SHOULD BE ABLE TO ENABLE SECURE BOOT IN THE UEFI/BIOS SETUP' -ForegroundColor Yellow
 					} else {
 						Write-Host 'YES' -ForegroundColor Green
-
-						if ($checkedWithWhyNotWin11 -and (-not $win11compatibleBootMethod)) {
-							Write-Host '      BUT, WhyNotWin11 REPORTED INCOMPATIBLE BOOT METHOD - THIS SHOULD NOT HAVE HAPPENED - Please inform Free Geek I.T.' -ForegroundColor Red
-						}
 					}
 
-					Write-Host '    TPM 2.0 Enabled: ' -NoNewline
+					Write-Host "`n    TPM 2.0 Enabled: " -NoNewline
 					if ($win11compatibleTPM) {
 						Write-Host 'YES' -ForegroundColor Green
-
-						if ($checkedWithWhyNotWin11 -and (-not $win11compatibleTPMfromWhyNotWin11)) {
-							Write-Host '      BUT, WhyNotWin11 REPORTED INCOMPATIBLE TPM - THIS SHOULD NOT HAVE HAPPENED - Please inform Free Geek I.T.' -ForegroundColor Red
-						}
-					} elseif (($tpmSpecVersionString -eq 'UNKNOWN') -or ($tpmSpecVersionString -eq 'Not Supported')) {
+					} elseif (($null -eq $tpmSpecVersionString) -or ($tpmSpecVersionString -eq '') -or ($tpmSpecVersionString -eq '0.0')) {
 						Write-Host 'NO (Not Detected)' -ForegroundColor Red
 						Write-Host '      YOU MAY BE ABLE TO ENABLE TPM IN THE UEFI/BIOS SETUP' -ForegroundColor Yellow
 					} else {
-						Write-Host "NO (Version $tpmSpecVersionString)" -ForegroundColor Red
+						Write-Host "NO (Version $tpmSpecVersionString Detected, At Least 2.0 REQUIRED)" -ForegroundColor Red
 						Write-Host '      SOME COMPUTERS HAVE MULTIPLE TPM VERSION OPTIONS IN THE UEFI/BIOS SETUP' -ForegroundColor Yellow
 					}
 
@@ -1103,7 +1227,7 @@ public static extern bool IsProcessorFeaturePresent(uint ProcessorFeature);
 						Write-Host "`n    1: Install Windows 11" -ForegroundColor Cyan
 
 						Write-Host "`n    0: Install Windows 10" -ForegroundColor Cyan
-						Write-Host "       CANNOT Be Licensed or Sold - ONLY Use for Testing or Firmware Updates" -ForegroundColor Yellow
+						Write-Host "       CANNOT Be Licensed or Sold - ONLY for Testing or Firmware Updates" -ForegroundColor Yellow
 
 						Write-Host "`n    C: Cancel Windows Installation and Reboot This Computer" -ForegroundColor Cyan
 						Write-Host "`n    X: Cancel Windows Installation and Shut Down This Computer" -ForegroundColor Cyan
@@ -1169,25 +1293,87 @@ public static extern bool IsProcessorFeaturePresent(uint ProcessorFeature);
 								$lastChooseWindowsVersionError = ''
 							}
 						}
-					} elseif ($checkedWithWhyNotWin11 -and ($win11compatibleCPUmodel -or $eleventhToThirteenthGenIntelCPU) -and $win11compatibleArchitecture -and $win11compatibleCPUcores -and $win11compatibleSSE4dot2 -and $win11compatibleRAM -and $win11compatibleStorage -and ($biosOrUEFI -eq 'UEFI') -and $win11compatibleBootMethod -and $win11compatibleSecureBoot -and $win11compatibleTPM -and $win11compatibleTPMfromWhyNotWin11) {
+					} elseif ($win11compatibleArchitecture -and $win11compatibleCPUcores -and $win11compatibleCPUmodel -and $win11compatibleRAM -and $win11compatibleStorage -and $win11compatibleBootMethod -and $win11compatibleSecureBoot -and $win11compatibleTPM) {
 						Write-Host "`n  This Computer Is Compatible With Window 11" -ForegroundColor Green
 
-						if ($latestWindowsWims.ContainsKey('11')) {
-							Write-Host "`n  Windows 11 Will Be Installed..." -ForegroundColor Green
+						if ($win11recommendedRAM -and $win11recommendedStorage -and $win11recommendedSecureBoot) {
+							if ($latestWindowsWims.ContainsKey('11')) {
+								Write-Host "`n  Windows 11 Will Be Installed..." -ForegroundColor Green
 
-							$installWindowsVersion = 11
+								$installWindowsVersion = 11
 
-							Start-Sleep 3 # Sleep for a few seconds to be able to see Windows 11 compatibility notes before clearing screen.
+								Start-Sleep 3 # Sleep for a few seconds to be able to see Windows 11 compatibility notes before clearing screen.
+							} else {
+								Write-Host "`n  ERROR: WINDOWS 11 INSTALLATION IMAGE NOT FOUND - THIS SHOULD NOT HAVE HAPPENED - Please inform Free Geek I.T." -ForegroundColor Red
+
+								$lastTaskSucceeded = $false
+							}
+
+							break
 						} else {
-							Write-Host "`n  ERROR: WINDOWS 11 INSTALLATION IMAGE NOT FOUND - THIS SHOULD NOT HAVE HAPPENED - Please inform Free Geek I.T." -ForegroundColor Red
+							Write-Host "`n  But, some of this computers specs listed above only meet the REQUIRED minimum and not the RECOMMENDED specs.`n  If possible, you should cancel the installation and try to meet the RECOMMENDED specs before installing Windows 11." -ForegroundColor Yellow
 
-							$lastTaskSucceeded = $false
+							Write-Output "`n`n  Confirm Windows 11 for $installDriveName...`n"
+
+							if ($lastChooseWindowsVersionError -ne '') {
+								Write-Host $lastChooseWindowsVersionError -ForegroundColor Red
+							}
+
+							Write-Host "`n    1: Install Windows 11" -ForegroundColor Cyan
+							Write-Host "`n    C: Cancel Windows Installation and Reboot This Computer" -ForegroundColor Cyan
+							Write-Host "`n    X: Cancel Windows Installation and Shut Down This Computer" -ForegroundColor Cyan
+
+							FocusScriptWindow
+							$Host.UI.RawUI.FlushInputBuffer() # So that key presses before this point are ignored.
+							$windowsVersionChoice = Read-Host "`n`n  Enter the Number or Letter of an Action to Perform"
+
+							if ($windowsVersionChoice -eq '1') {
+								if ($latestWindowsWims.ContainsKey('11')) {
+									Write-Host "`n  Windows 11 Will Be Installed..." -ForegroundColor Green
+
+									$installWindowsVersion = 11
+
+									Start-Sleep 2
+								} else {
+									Write-Host "`n  ERROR: WINDOWS 11 INSTALLATION IMAGE NOT FOUND - THIS SHOULD NOT HAVE HAPPENED - Please inform Free Geek I.T." -ForegroundColor Red
+
+									$lastTaskSucceeded = $false
+								}
+
+								break
+							} elseif ($windowsVersionChoice.ToUpper() -eq 'C') {
+								FocusScriptWindow
+								$Host.UI.RawUI.FlushInputBuffer() # So that key presses before this point are ignored.
+								$confirmQuit = Read-Host "`n  Enter `"C`" Again to Confirm Canceling Windows Installation and Rebooting This Computer"
+
+								if ($confirmQuit.ToUpper() -eq 'C') {
+									$shouldQuit = $true
+									break
+								} else {
+									$lastChooseWindowsVersionError = "`n    ERROR: Did Not Confirm Canceling Windows Installation and Rebooting This Computer - CHOOSE AGAIN`n"
+								}
+							} elseif ($windowsVersionChoice.ToUpper() -eq 'X') {
+								FocusScriptWindow
+								$Host.UI.RawUI.FlushInputBuffer() # So that key presses before this point are ignored.
+								$confirmShutDown = Read-Host "`n  Enter `"X`" Again to Confirm Canceling Windows Installation and Shutting Down This Computer"
+
+								if ($confirmShutDown.ToUpper() -eq 'X') {
+									$shouldShutDown = $true
+									break
+								} else {
+									$lastChooseWindowsVersionError = "`n    ERROR: Did Not Confirm Canceling Windows Installation and Shutting Down This Computer - CHOOSE AGAIN`n"
+								}
+							} else {
+								if ($windowsVersionChoice) {
+									$lastChooseWindowsVersionError = "`n    ERROR: `"$windowsVersionChoice`" Is Not a Valid Choice - CHOOSE AGAIN`n"
+								} else {
+									$lastChooseWindowsVersionError = ''
+								}
+							}
 						}
-
-						break
-					} elseif (((-not $checkedWithWhyNotWin11) -or (($win11compatibleCPUmodel -or $eleventhToThirteenthGenIntelCPU) -and $win11compatibleArchitecture -and $win11compatibleCPUcores -and $win11compatibleSSE4dot2)) -and ((-not $win11compatibleRAM) -or (-not $win11compatibleStorage) -or (-not $win11compatibleTPM) -or (-not $win11compatibleTPMfromWhyNotWin11) -or ($biosOrUEFI -ne 'UEFI') -or (-not $win11compatibleBootMethod) -or (-not $win11compatibleSecureBoot))) {
-						Write-Host "`n  This Computer Is NOT Currently Compatible With Window 11" -ForegroundColor Red
-						Write-Host "`n  But, some of the compatibilty issues listed above may be fixable.`n  You should cancel the installation and try to fix them before installing Windows 10.`n  Our TPR contract with Microsoft states that if a computer supports Windows 11, then it MUST have Windows 11 installed onto it.`n  Therefore, if these compatibilty issues CAN be fixed they MUST be fixed.`n  Windows 10 should only be installed if it is NOT POSSIBLE BY ANY MEANS to fix these compatibilty issues." -ForegroundColor Yellow
+					} elseif ($win11compatibleArchitecture -and $win11compatibleCPUcores -and $win11compatibleCPUmodel -and ((-not $win11compatibleRAM) -or (-not $win11compatibleStorage) -or (-not $win11compatibleBootMethod) -or (-not $win11compatibleSecureBoot) -or (-not $win11compatibleTPM))) {
+						Write-Host "`n  This Computer IS NOT Currently Compatible With Window 11" -ForegroundColor Red
+						Write-Host "`n  But, some of the compatibility issues listed above may be fixable.`n  You should cancel the installation and try to fix them before installing Windows 10.`n  Our TPR contract with Microsoft states that if a computer supports Windows 11, then it MUST have Windows 11 installed onto it.`n  Therefore, if these compatibility issues CAN be fixed they MUST be fixed.`n  Windows 10 should only be installed if it is NOT POSSIBLE BY ANY MEANS to fix these compatibility issues." -ForegroundColor Yellow
 
 						Write-Output "`n`n  Confirm Windows Version for $installDriveName...`n"
 
@@ -1196,7 +1382,7 @@ public static extern bool IsProcessorFeaturePresent(uint ProcessorFeature);
 						}
 
 						Write-Host "`n    0: Install Windows 10" -ForegroundColor Cyan
-						Write-Host "       CANNOT Be Licensed or Sold - ONLY Use for Testing or Firmware Updates" -ForegroundColor Yellow
+						Write-Host "       CANNOT Be Licensed or Sold - ONLY for Testing or Firmware Updates" -ForegroundColor Yellow
 
 						Write-Host "`n    C: Cancel Windows Installation and Reboot This Computer" -ForegroundColor Cyan
 						Write-Host "`n    X: Cancel Windows Installation and Shut Down This Computer" -ForegroundColor Cyan
@@ -1247,11 +1433,11 @@ public static extern bool IsProcessorFeaturePresent(uint ProcessorFeature);
 							}
 						}
 					} else {
-						Write-Host "`n  This Computer Is NOT Compatible With Window 11" -ForegroundColor Yellow
+						Write-Host "`n  This Computer IS NOT Compatible With Window 11" -ForegroundColor Red
 
 						if ($latestWindowsWims.ContainsKey('10')) {
 							Write-Host "`n  Windows 10 Will Be Installed..." -ForegroundColor Green
-							Write-Host "  Windows 10 CANNOT Be Licensed or Sold - ONLY Use for Testing or Firmware Updates" -ForegroundColor Yellow
+							Write-Host "  Windows 10 CANNOT Be Licensed or Sold - ONLY for Testing or Firmware Updates" -ForegroundColor Yellow
 
 							Start-Sleep 3 # Sleep for a few seconds to be able to see Windows 11 compatibility notes before clearing screen.
 						} else {
@@ -1279,7 +1465,7 @@ public static extern bool IsProcessorFeaturePresent(uint ProcessorFeature);
 
 							Write-Host "`n  Windows $installWindowsVersion $installWindowsEdition Will Be Installed..." -ForegroundColor Green
 							if ($installWindowsVersion -eq 10) {
-								Write-Host "  Windows 10 CANNOT Be Licensed or Sold - ONLY Use for Testing or Firmware Updates" -ForegroundColor Yellow
+								Write-Host "  Windows 10 CANNOT Be Licensed or Sold - ONLY for Testing or Firmware Updates" -ForegroundColor Yellow
 							}
 
 							$installWimPath = $latestWindowsWims["$installWindowsVersion"]["$installWindowsEdition"].Path
@@ -1291,7 +1477,7 @@ public static extern bool IsProcessorFeaturePresent(uint ProcessorFeature);
 							Clear-Host
 							Write-Output "`n  Choose Windows $installWindowsVersion Edition for $installDriveName...`n"
 							if ($installWindowsVersion -eq 10) {
-								Write-Host "  Windows 10 CANNOT Be Licensed or Sold - ONLY Use for Testing or Firmware Updates`n" -ForegroundColor Yellow
+								Write-Host "  Windows 10 CANNOT Be Licensed or Sold - ONLY for Testing or Firmware Updates`n" -ForegroundColor Yellow
 							}
 
 							if ($lastChooseWindowsEditionError -ne '') {
@@ -1403,7 +1589,10 @@ public static extern bool IsProcessorFeaturePresent(uint ProcessorFeature);
 				}
 			}
 
-			if ($lastTaskSucceeded -and (-not $ipdtMode)) { # Do not bother prompting to install extra apps when in IPDT mode.
+			if (($testMode -or ($installWindowsVersion -eq 10)) -and $lastTaskSucceeded -and (-not $ipdtMode)) { # Do not bother prompting to install Extra Apps when already in IPDT mode.
+				# NOTE: As of 12/5/2025, no longer prompting to install Extra Apps and only just always installing Standard apps.
+				# BUT, keeping the code here in case it is useful again in the future and still displaying prompt in Test Mode, or when installing Windows 10 to allow for NO Apps Mode.
+
 				Clear-Host
 				Write-Output "`n  Locating App Installer Files..."
 
@@ -1470,7 +1659,7 @@ public static extern bool IsProcessorFeaturePresent(uint ProcessorFeature);
 					Clear-Host
 					Write-Output "`n  Choose Windows $installWindowsVersion App Installations for $installDriveName...`n"
 					if ($installWindowsVersion -eq 10) {
-						Write-Host "  Windows 10 CANNOT Be Licensed or Sold - ONLY Use for Testing or Firmware Updates`n" -ForegroundColor Yellow
+						Write-Host "  Windows 10 CANNOT Be Licensed or Sold - ONLY for Testing or Firmware Updates`n" -ForegroundColor Yellow
 					}
 
 					if ($lastChooseInstallTypeError -ne '') {
@@ -1769,7 +1958,7 @@ public static extern bool IsProcessorFeaturePresent(uint ProcessorFeature);
 				Clear-Host
 				Write-Output "`n  Installing Windows Onto $installDriveName...`n`n`n`n`n`n  Version: $installWimDisplayName" # Add empty lines for PowerShell progress UI
 				if ($installWindowsVersion -eq 10) {
-					Write-Host "`n  Windows 10 CANNOT Be Licensed or Sold - ONLY Use for Testing or Firmware Updates" -ForegroundColor Yellow
+					Write-Host "`n  Windows 10 CANNOT Be Licensed or Sold - ONLY for Testing or Firmware Updates" -ForegroundColor Yellow
 				}
 
 				try {
@@ -1806,13 +1995,165 @@ public static extern bool IsProcessorFeaturePresent(uint ProcessorFeature);
 			}
 		}
 
+		if ($lastTaskSucceeded -and (-not $isBaseInstall) -and (-not $didCreateRecoveryPartition)) {
+			Write-Output "`n`n  Copying Setup Resources Onto $installDriveName..."
+
+			try {
+				# Copy UnattendAudit.xml to Installed OS to enter Audit mode and run "Setup Windows.ps1" (references are within XML file).
+				# Install "Unattend.xml" into "W:\Windows\System32\Sysprep" instead of "W:\Windows\Panther" so that it's processed after every reboot until it's deleted manually.
+				# If it's only installed into "W:\Windows\Panther" then the XML will be modified to mark the "auditUser" pass settings with "wasPassProcessed=true" which would make the "Setup Windows.ps1" only run once on the first boot, which we don't want.
+				if ($testMode -and $localServerResourcesAccessible -and (Test-Path "$setupResourcesSMBtestingPath\UnattendAudit.xml")) {
+					Copy-Item "$setupResourcesSMBtestingPath\UnattendAudit.xml" 'W:\Windows\System32\Sysprep\Unattend.xml' -Force -ErrorAction Stop
+
+					Write-Host '    COPIED UNATTEND FROM TESTING RESOURCES' -ForegroundColor Yellow
+				} else {
+					Copy-Item "$setupResourcesPath\UnattendAudit.xml" 'W:\Windows\System32\Sysprep\Unattend.xml' -Force -ErrorAction Stop
+
+					if ($testMode -and $localServerResourcesAccessible) {
+						Write-Host '    NO UNATTEND IN TESTING RESOURCES - COPIED UNATTEND FROM PRODUCTION RESOURCES' -ForegroundColor Yellow
+					}
+				}
+
+				# Copy entire \Install folder to Installed OS for QA Helper, etc.
+				Copy-Item "$Env:SystemDrive\Install" 'W:\' -Recurse -Force -ErrorAction Stop
+
+				# Copy all files and folders within "setup-resources" of SMB share into "\Install" except for "UnattendAudit.xml".
+				Get-ChildItem $setupResourcesPath -Exclude 'UnattendAudit.xml' -ErrorAction Stop | ForEach-Object {
+					Copy-Item $_ 'W:\Install' -Recurse -Force -ErrorAction Stop
+
+					if ($testMode -and $localServerResourcesAccessible) {
+						Write-Host "    COPIED PRODUCTION RESOURCE: $($_.Name)" -ForegroundColor Yellow
+					}
+				}
+
+				if ($testMode -and $localServerResourcesAccessible) {
+					# When in test mode (and local server is accessible), copy production resources first and then add or overwrite with testing resources.
+					Get-ChildItem $setupResourcesSMBtestingPath -Exclude 'UnattendAudit.xml' -ErrorAction Stop | ForEach-Object {
+						Copy-Item $_ 'W:\Install' -Recurse -Force -ErrorAction Stop
+
+						Write-Host "    COPIED TESTING RESOURCE: $($_.Name)" -ForegroundColor Yellow
+					}
+				}
+
+				if ($testMode -and (-not (Test-Path 'W:\Install\fgFLAG-TEST'))) { # Make sure test mode is set in OS if it's set during installation.
+					New-Item -ItemType 'File' -Path 'W:\Install\fgFLAG-TEST' | Out-Null
+
+					Write-Host '    SET TEST MODE FOR INSTALLED OS SINCE INSTALLATION WAS IN TEST MODE' -ForegroundColor Yellow
+				}
+
+				if ($isExtraAppsInstall -and (-not (Test-Path 'W:\Install\fgFLAG-EXTRAAPPS'))) { # If technician chose "Extra Apps" install mode, create flag so that "Setup Windows" in installed OS will auto-install extra apps.
+					New-Item -ItemType 'File' -Path 'W:\Install\fgFLAG-EXTRAAPPS' | Out-Null
+
+					Write-Host '    SET EXTRA APPS MODE FOR INSTALLED OS TO AUTO-INSTALL EXTRA APPS' -ForegroundColor Yellow
+				}
+
+				if ($isNoAppsInstall -and (-not (Test-Path 'W:\Install\fgFLAG-NOAPPS'))) { # If technician chose "NO Apps" install mode, create flag so that "Setup Windows" in installed OS will not install apps.
+					New-Item -ItemType 'File' -Path 'W:\Install\fgFLAG-NOAPPS' | Out-Null
+
+					Write-Host '    SET NO APPS MODE FOR INSTALLED OS TO NOT INSTALL APPS' -ForegroundColor Yellow
+				}
+
+				if ($ipdtMode -and (-not (Test-Path 'W:\Install\fgFLAG-IPDT'))) { # Create the "IPDT" flag in the installed OS to auto-launch "Intel Processor Diagnostic Tool" instead of "QA Helper" (for Hardware Testing).
+					New-Item -ItemType 'File' -Path 'W:\Install\fgFLAG-IPDT' | Out-Null
+
+					Write-Host '    CREATED "IPDT" (Intel Processor Diagnostic Tool) FLAG IN INSTALLED OS SINCE "IPDT" MODE SPECIFIED' -ForegroundColor Yellow
+				}
+
+				Write-Host "`n  Successfully Copied Setup Resources Onto $installDriveName" -ForegroundColor Green
+			} catch {
+				Write-Host "`n  ERROR COPYING SETUP RESOURCES: $_" -ForegroundColor Red
+				Write-Host "`n  ERROR: Failed to copy `"UnattendAudit.xml`" or `"\Install`" folder or other setup resources." -ForegroundColor Red
+
+				$lastTaskSucceeded = $false
+			}
+		}
+
+		if ($localServerResourcesAccessible) {
+			Remove-SmbMapping -RemotePath $smbResourcesShare -Force -UpdateProfile -ErrorAction SilentlyContinue # Done with Resources SMB Share now, so remove it.
+		}
+
 		if ($lastTaskSucceeded -and (-not $didInstallDrivers)) {
+			$localServerDriversAccessible = $false
+
+			Write-Output ''
+
+			for ( ; ; ) {
+				Write-Output "`n  Preparing to Pre-Install Windows Drivers Onto $installDriveName..."
+
+				try {
+					$localServerDriversAccessible = (Test-Connection $smbDriversServerAddress -Count 1 -Quiet -ErrorAction Stop)
+				} catch {
+					Write-Host "`n  ERROR CONNECTING TO LOCAL FREE GEEK SERVER FOR WINDOWS DRIVERS: $_" -ForegroundColor Red
+				}
+
+				if ($localServerDriversAccessible) {
+					Write-Host "`n  Successfully Connected to Local Free Geek Server for Windows Drivers" -ForegroundColor Green
+
+					Write-Host "`n`n  Mounting SMB Share for Windows Drivers - PLEASE WAIT, THIS MAY TAKE A MOMENT..." -NoNewline
+
+					# Try to connect to SMB Share 5 times before stopping to show error to user because sometimes it takes a few attempts, or it sometimes just fails and takes more manual reattempts before it finally works.
+					# These failures seemed to happen more often when using a guest/anonymous SMB Share in WinPE. I think WinPE just has issues with guest/anonymous SMB Shares, so we're using a password protected one instead.
+					for ($smbMountAttempt = 0; $smbMountAttempt -lt 5; $smbMountAttempt ++) {
+						try {
+							# If we don't get the New-SmbMapping return value it seems to be asynchronous, which results in messages being show out of order result and also result in a failure not being detected.
+							$smbDriversMappingStatus = (New-SmbMapping -RemotePath $smbDriversShare -UserName $smbDriversUsername -Password $smbDriversPassword -Persistent $false -ErrorAction Stop).Status
+
+							if ($smbDriversMappingStatus -eq 0) {
+								Start-Sleep ($smbMountAttempt + 1) # Sleep a little longer after each attempt.
+								if ((Test-Path $driversCacheBasePath) -and (Test-Path $driverPacksBasePath)) {
+									Write-Host "`n`n  Successfully Mounted SMB Share for Windows Drivers" -ForegroundColor Green
+								} else {
+									Remove-SmbMapping -RemotePath $smbDriversShare -Force -UpdateProfile -ErrorAction SilentlyContinue
+									throw 'Failed to Located Base Drivers Paths'
+								}
+							} else {
+								throw "SMB Mapping Status $smbDriversMappingStatus"
+							}
+
+							break
+						} catch {
+							if ($smbMountAttempt -lt 4) {
+								Write-Host '.' -NoNewline
+								Start-Sleep ($smbMountAttempt + 1) # Sleep a little longer after each attempt.
+							} else {
+								Write-Host "`n`n  ERROR MOUNTING SMB SHARE FOR WINDOWS DRIVERS: $_" -ForegroundColor Red
+								Write-Host "`n  ERROR: Failed to connect to local Free Geek SMB share `"$smbDriversShare`" for Windows drivers." -ForegroundColor Red
+
+								$localServerDriversAccessible = $false
+							}
+						}
+					}
+				} else {
+					Write-Host "`n  ERROR: Failed to connect to local Free Geek server for Windows drivers." -ForegroundColor Red
+				}
+
+				if ($localServerDriversAccessible) {
+					break
+				} else {
+					Write-Host "`n  IMPORTANT: Make sure Ethernet cable is plugged securely and try again. " -ForegroundColor Red
+
+					Write-Host "`n`n  Full Windows driver pre-installation is only available with local server access.`n  If you continue without full driver pre-installation,`n  drivers will be installed by Windows Update in OS." -ForegroundColor Yellow
+
+					Write-Host "`n`n  Press ENTER to Try Again or Press `"C`" to Continue Without Full Driver Pre-Installation: " -NoNewline -ForegroundColor Cyan
+
+					FocusScriptWindow
+					$Host.UI.RawUI.FlushInputBuffer() # So that key presses before this point are ignored.
+					$actionChoice = Read-Host
+
+					Clear-Host
+
+					if ($actionChoice.ToUpper() -eq 'C') {
+						break
+					}
+				}
+			}
+
 			$driversSource = 'UNKNOWN'
 			$allAvailableDriverInfPathsForModel = @()
 
-			if (-not $localServerResourcesAccessible) {
-				Write-Host "`n`n  Full Driver Installation Not Available Without Local Server Access - WINDOWS UPDATE WILL INSTALL ALL DRIVERS IN OS" -ForegroundColor Yellow
-				Add-Content "$Env:SystemDrive\Install\Windows Install Log.txt" "Full Driver Installation Not Available Without Local Server Access - $(Get-Date)" -ErrorAction SilentlyContinue
+			if (-not $localServerDriversAccessible) {
+				Write-Host "`n  Full Driver Pre-Installation Only Available With Local Server Access - WINDOWS UPDATE WILL INSTALL ALL DRIVERS IN OS" -ForegroundColor Yellow
+				Add-Content "$Env:SystemDrive\Install\Windows Install Log.txt" "Full Driver Pre-Installation Only Available With Local Server Access - $(Get-Date)" -ErrorAction SilentlyContinue
 			} else {
 				Write-Output "`n`n  Locating Drivers for This Computer Model..."
 
@@ -1839,8 +2180,8 @@ public static extern bool IsProcessorFeaturePresent(uint ProcessorFeature);
 					$possibleModelsForDriverPacks = @()
 
 					try {
-						$computerSystemProductVendorVersionName = (Get-CimInstance 'Win32_ComputerSystemProduct' -Property 'Vendor', 'Version', 'Name')
-						$manufacturerForDriverPacks = $computerSystemProductVendorVersionName.Vendor.ToLower()
+						$computerSystemProductInfo = (Get-CimInstance 'Win32_ComputerSystemProduct' -Property 'Vendor', 'Version', 'Name')
+						$manufacturerForDriverPacks = $computerSystemProductInfo.Vendor.ToLower()
 
 						# Dell Driver Packs (http://downloads.dell.com/catalog/DriverPackCatalog.cab) are available on the server (as of January 2021).
 						# HP Driver Packs (http://ftp.hp.com/pub/caps-softpaq/cmit/HPClientDriverPackCatalog.cab) are available on the server (as of January 2021).
@@ -1860,15 +2201,15 @@ public static extern bool IsProcessorFeaturePresent(uint ProcessorFeature);
 						# The Classes and Properties being used for manufacturer and model names are from the thoroughly tested code in QA Helper,
 						# except for some specifics for Dell and HP, which came from: https://github.com/MSEndpointMgr/ModernDriverManagement/blob/4c71b08c890f96f953849b6845e04ed2808c67f7/Invoke-CMApplyDriverPackage.ps1#L1109
 
-						$possibleModelsForDriverPacks += $computerSystemProductVendorVersionName.Version
-						$possibleModelsForDriverPacks += $computerSystemProductVendorVersionName.Name
+						$possibleModelsForDriverPacks += $computerSystemProductInfo.Version
+						$possibleModelsForDriverPacks += $computerSystemProductInfo.Name
 
-						$computerSystemSystemSKUNumberAndOEMStringArray = (Get-CimInstance 'Win32_ComputerSystem' -Property 'SystemSKUNumber', 'OEMStringArray')
-						$possibleModelsForDriverPacks += $computerSystemSystemSKUNumberAndOEMStringArray.SystemSKUNumber
+						$computerSystemInfo = (Get-CimInstance 'Win32_ComputerSystem' -Property 'SystemSKUNumber', 'OEMStringArray')
+						$possibleModelsForDriverPacks += $computerSystemInfo.SystemSKUNumber
 
 						if ($manufacturerForDriverPacks -eq 'Dell') {
 							# "OEMStringArray" is only used as a fallback on Dell when "SystemSKUNumber" is same as "Name" from "Win32_ComputerSystemProduct" instead of actual Type/System ID.
-							$possibleModelsForDriverPacks += $computerSystemSystemSKUNumberAndOEMStringArray.OEMStringArray
+							$possibleModelsForDriverPacks += $computerSystemInfo.OEMStringArray
 						} elseif ($manufacturerForDriverPacks -eq 'HP') {
 							# Only include the "Product" from "Win32_BaseBoard" for HPs since that is where the Type/System ID will be.
 							# Don't want to include it for other manufacturers to avoid false positive matches on 4 character strings that are not actually the correct Type/System ID.
@@ -2045,7 +2386,7 @@ public static extern bool IsProcessorFeaturePresent(uint ProcessorFeature);
 				# Intel RST VMD storage drivers that were pre-installed into the booted WinRE installer included a few extra drivers and anything incompatible will not get installed anyways.
 
 				# NOTE: Do not bother using "Get-WindowsDriver -Online" (like "Complete Windows.ps1" does when caching drivers) since it takes longer and
-				# the only benefit is easier compatibility checking and the code below already does compatibilty checking by parsing the ".inf" files manually.
+				# the only benefit is easier compatibility checking and the code below already does compatibility checking by parsing the ".inf" files manually.
 			}
 
 			$driverDetailsForCompatibleInfs = @{}
@@ -2355,7 +2696,7 @@ public static extern bool IsProcessorFeaturePresent(uint ProcessorFeature);
 							$thisDriverInfBaseName = (Split-Path $thisDriverInfPath -Leaf).Split('.')[0]
 							$thisDriverFolder = (Split-Path $thisDriverInfPath -Parent)
 
-							Write-Host "`n    Installing $driversSource Driver $thisDriverIndex of $($driverDetailsForCompatibleInfs.Count): `"$thisDriverInfBaseName`" Version $($thisDriverDetails.DriverVersion) ($([math]::Round(((Get-ChildItem -Path $thisDriverFolder -Recurse | Measure-Object -Property Length -Sum).Sum / 1MB), 2)) MB)`n      $($thisDriverDetails.DriverClass) - $($thisDriverDetails.DriverName)"
+							Write-Host "`n    Installing $driversSource Driver $thisDriverIndex of $($driverDetailsForCompatibleInfs.Count): `"$thisDriverInfBaseName`" Version $($thisDriverDetails.DriverVersion) ($([math]::Round(((Get-ChildItem -Path $thisDriverFolder -Recurse | Measure-Object -Property 'Length' -Sum).Sum / 1MB), 2)) MB)`n      $($thisDriverDetails.DriverClass) - $($thisDriverDetails.DriverName)"
 
 							if (-not (Test-Path "W:\Windows\System32\DriverStore\FileRepository\$(Split-Path $thisDriverFolder -Leaf)")) { # This check is only useful for WinPE or Cached drivers where the driver folder name will match what would be used in the checked location, but doesn't hurt to check regardless to save any time possible.
 								try {
@@ -2399,84 +2740,10 @@ public static extern bool IsProcessorFeaturePresent(uint ProcessorFeature);
 				Write-Host "`n  No Compatible $driversSource Drivers to Install - WINDOWS UPDATE WILL INSTALL DRIVERS IN OS" -ForegroundColor Yellow
 				Add-Content "$Env:SystemDrive\Install\Windows Install Log.txt" "No Compatible $driversSource Drivers to Install - $(Get-Date)" -ErrorAction SilentlyContinue
 			}
-		}
 
-		if ($lastTaskSucceeded -and (-not $isBaseInstall) -and (-not $didCreateRecoveryPartition)) {
-			Write-Output "`n`n  Copying Setup Resources Onto $installDriveName..."
-
-			try {
-				# Copy UnattendAudit.xml to Installed OS to enter Audit mode and run "Setup Windows.ps1" (references are within XML file).
-				# Install "Unattend.xml" into "W:\Windows\System32\Sysprep" instead of "W:\Windows\Panther" so that it's processed after every reboot until it's deleted manually.
-				# If it's only installed into "W:\Windows\Panther" then the XML will be modified to mark the "auditUser" pass settings with "wasPassProcessed=true" which would make the "Setup Windows.ps1" only run once on the first boot, which we don't want.
-				if ($testMode -and $localServerResourcesAccessible -and (Test-Path "$setupResourcesSMBtestingPath\UnattendAudit.xml")) {
-					Copy-Item "$setupResourcesSMBtestingPath\UnattendAudit.xml" 'W:\Windows\System32\Sysprep\Unattend.xml' -Force -ErrorAction Stop
-
-					Write-Host '    COPIED UNATTEND FROM TESTING RESOURCES' -ForegroundColor Yellow
-				} else {
-					Copy-Item "$setupResourcesPath\UnattendAudit.xml" 'W:\Windows\System32\Sysprep\Unattend.xml' -Force -ErrorAction Stop
-
-					if ($testMode -and $localServerResourcesAccessible) {
-						Write-Host '    NO UNATTEND IN TESTING RESOURCES - COPIED UNATTEND FROM PRODUCTION RESOURCES' -ForegroundColor Yellow
-					}
-				}
-
-				# Copy entire \Install folder to Installed OS for QA Helper, etc.
-				Copy-Item "$Env:SystemDrive\Install" 'W:\' -Recurse -Force -ErrorAction Stop
-
-				# Copy all files and folders within "setup-resources" of SMB share into "\Install" except for "UnattendAudit.xml".
-				Get-ChildItem $setupResourcesPath -Exclude 'UnattendAudit.xml' -ErrorAction Stop | ForEach-Object {
-					Copy-Item $_ 'W:\Install' -Recurse -Force -ErrorAction Stop
-
-					if ($testMode -and $localServerResourcesAccessible) {
-						Write-Host "    COPIED PRODUCTION RESOURCE: $($_.Name)" -ForegroundColor Yellow
-					}
-				}
-
-				if ($testMode -and $localServerResourcesAccessible) {
-					# When in test mode (and local server is accessible), copy production resources first and then add or overwrite with testing resources.
-					Get-ChildItem $setupResourcesSMBtestingPath -Exclude 'UnattendAudit.xml' -ErrorAction Stop | ForEach-Object {
-						Copy-Item $_ 'W:\Install' -Recurse -Force -ErrorAction Stop
-
-						Write-Host "    COPIED TESTING RESOURCE: $($_.Name)" -ForegroundColor Yellow
-					}
-				}
-
-				if ($testMode -and (-not (Test-Path 'W:\Install\fgFLAG-TEST'))) { # Make sure test mode is set in OS if it's set during installation.
-					New-Item -ItemType 'File' -Path 'W:\Install\fgFLAG-TEST' | Out-Null
-
-					Write-Host '    SET TEST MODE FOR INSTALLED OS SINCE INSTALLATION WAS IN TEST MODE' -ForegroundColor Yellow
-				}
-
-				if ($isExtraAppsInstall -and (-not (Test-Path 'W:\Install\fgFLAG-EXTRAAPPS'))) { # If technician chose "Extra Apps" install mode, create flag so that "Setup Windows" in installed OS will auto-install extra apps.
-					New-Item -ItemType 'File' -Path 'W:\Install\fgFLAG-EXTRAAPPS' | Out-Null
-
-					Write-Host '    SET EXTRA APPS MODE FOR INSTALLED OS TO AUTO-INSTALL EXTRA APPS' -ForegroundColor Yellow
-				}
-
-				if ($isNoAppsInstall -and (-not (Test-Path 'W:\Install\fgFLAG-NOAPPS'))) { # If technician chose "NO Apps" install mode, create flag so that "Setup Windows" in installed OS will not install apps.
-					New-Item -ItemType 'File' -Path 'W:\Install\fgFLAG-NOAPPS' | Out-Null
-
-					Write-Host '    SET NO APPS MODE FOR INSTALLED OS TO NOT INSTALL APPS' -ForegroundColor Yellow
-				}
-
-				if ($ipdtMode -and (-not (Test-Path 'W:\Install\fgFLAG-IPDT'))) { # Create the "IPDT" flag in the installed OS to auto-launch "Intel Processor Diagnostic Tool" instead of "QA Helper" (for Hardware Testing).
-					New-Item -ItemType 'File' -Path 'W:\Install\fgFLAG-IPDT' | Out-Null
-
-					Write-Host '    CREATED "IPDT" (Intel Processor Diagnostic Tool) FLAG IN INSTALLED OS SINCE "IPDT" MODE SPECIFIED' -ForegroundColor Yellow
-				}
-
-				Write-Host "`n  Successfully Copied Setup Resources Onto $installDriveName" -ForegroundColor Green
-			} catch {
-				Write-Host "`n  ERROR COPYING SETUP RESOURCES: $_" -ForegroundColor Red
-				Write-Host "`n  ERROR: Failed to copy `"UnattendAudit.xml`" or `"\Install`" folder or other setup resources." -ForegroundColor Red
-
-				$lastTaskSucceeded = $false
+			if ($localServerDriversAccessible) {
+				Remove-SmbMapping -RemotePath $smbDriversShare -Force -UpdateProfile -ErrorAction SilentlyContinue # Done with Drivers SMB Share now, so remove it.
 			}
-		}
-
-		if ($localServerResourcesAccessible) {
-			Remove-SmbMapping -RemotePath $smbShare -Force -UpdateProfile -ErrorAction SilentlyContinue # Done with SMB Share now, so remove it.
-			Remove-SmbMapping -RemotePath $smbWdsShare -Force -UpdateProfile -ErrorAction SilentlyContinue # Done with SMB Share now, so remove it.
 		}
 
 		if ($lastTaskSucceeded) {

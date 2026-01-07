@@ -203,7 +203,7 @@ foreach ($thisWindowsMajorVersion in $windowsMajorVersions) {
 		$ProgressPreference = 'SilentlyContinue' # Not showing progress makes "Invoke-WebRequest" downloads MUCH faster: https://stackoverflow.com/a/43477248
 
 		if (($thisWindowsMajorVersion -eq '11') -and ($thisWindowsFeatureVersion -eq "$((Get-Date).AddYears(-1).ToString('yy'))H2")) {
-			$latestWindows11featureVersion = ((Invoke-WebRequest -TimeoutSec 5 -Uri 'https://www.microsoft.com/software-download/windows11').Content | Select-String '\(Current release: Windows 11 202\d Update l Version (2\dH2)\)').Matches[0].Groups[1].Value
+			$latestWindows11featureVersion = ((Invoke-WebRequest -UseBasicParsing -TimeoutSec 5 -Uri 'https://www.microsoft.com/software-download/windows11').Content | Select-String '\(Current release: Windows 11 202\d Update l Version (2\dH2)\)').Matches[0].Groups[1].Value
 			if ($latestWindows11featureVersion -ne $thisWindowsFeatureVersion) {
 				if (($null -eq $latestWindows11featureVersion) -or ($latestWindows11featureVersion -eq '')) {
 					$latestWindows11featureVersion = 'UNKNOWN'
@@ -335,6 +335,11 @@ foreach ($thisWindowsMajorVersion in $windowsMajorVersions) {
 
 			$windowsUpdatesSearchTemplates = @{}
 			$windowsUpdatesSearchTemplates['[YYYY-MM] Cumulative Update for Windows [MAJOR VERSION] Version [FEATURE VERSION] for x64'] = 1
+			# NOTE: Starting in November 2025, Microsoft no longer uses the term "Cumulative Update" in the Windows Update interface, and instead uses "Security Update" (and "Preview Update" instead of "Cumulative Update Preview").
+			# https://www.windowslatest.com/2025/11/01/windows-11-update-names-got-simpler-drops-yyyy-mm-now-it-admins-are-going-mad/
+			# https://www.windowslatest.com/2025/11/04/after-backlash-microsoft-restores-dates-in-windows-11-updates/
+			# https://support.microsoft.com/en-us/topic/simplified-windows-update-titles-a076e00e-4f6a-4fd6-85ad-b4170b9c8808
+			# BUT, in the Microsoft Update Catalog, the "Cumulative Update" term is STILL USED (as mentioned in the Microsoft link above).
 
 			if ($thisWindowsMajorVersion -eq '10') {
 				$windowsUpdatesSearchTemplates['2023-10 Servicing Stack Update for Windows [MAJOR VERSION] Version [FEATURE VERSION] for x64'] = 0
@@ -436,7 +441,7 @@ foreach ($thisWindowsMajorVersion in $windowsMajorVersions) {
 
 				$thisUpdateToSearch = $thisUpdateSearchTemplate
 
-				for (;;) {
+				for ( ; ; ) {
 					if ($isSearchingCumulativeUpdate -or $isSearchingSafeOSupdate) {
 						if ($isSearchingCumulativeUpdate) {
 							$thisUpdateSearchTemplate = $thisUpdateSearchTemplate.Replace('Cumulative Update Preview for', 'Cumulative Update for')
@@ -447,6 +452,13 @@ foreach ($thisWindowsMajorVersion in $windowsMajorVersions) {
 						}
 
 						$yearAndMonthToSearch = (Get-Date).AddMonths($relativeUpdateSearchMonth).ToString('yyyy-MM')
+						if ($thisWindowsMajorVersion -eq '10') {
+							$yearAndMonthToSearch = '2025-10'
+							# NOTE: DO NOT attempt to install Windows 10 Cumulative Updates newer than 2025-10 since they require the Extended Security Updates (ESU) program.
+							# https://learn.microsoft.com/en-us/windows/whats-new/extended-security-updates
+							# The Cumulative Updates newer than 2025-10 ARE available to download in the Microsoft Update Catalog, but installation will
+							# always fail with ERROR_ADVANCED_INSTALLER_FAILED (0x80073713) on the offline image (which is not enrolled in the ESU program).
+						}
 
 						if ($yearAndMonthToSearch.startsWith('2020-')) {
 							Write-Host "`n    FAILED TO FIND RECENT WINDOWS UPDATES - MAKE SURE INTERNET IS CONNECTED AND TRY AGAIN" -ForegroundColor Red
@@ -471,7 +483,7 @@ foreach ($thisWindowsMajorVersion in $windowsMajorVersions) {
 						Write-Output "      Truncated Search String for 100 Character Limit: `"$thisTruncatedUpdateToSearch`""
 					}
 
-					$theseUpdateSearchSource = Invoke-WebRequest -TimeoutSec 5 -Uri "https://www.catalog.update.microsoft.com/Search.aspx?q=%22$($thisTruncatedUpdateToSearch.Replace(' ', '%20'))%22" -ErrorAction Stop
+					$theseUpdateSearchSource = Invoke-WebRequest -UseBasicParsing -TimeoutSec 5 -Uri "https://www.catalog.update.microsoft.com/Search.aspx?q=%22$($thisTruncatedUpdateToSearch.Replace(' ', '%20'))%22" -ErrorAction Stop
 					$theseUpdateSearchLinks = $theseUpdateSearchSource.Links
 
 					$thisUpdateID = $null
@@ -499,7 +511,7 @@ foreach ($thisWindowsMajorVersion in $windowsMajorVersions) {
 							$thisKBfromUpdateFullName = $kbMatchesUpdateFullName[0].Groups[1].Value.Trim()
 						}
 
-						$downloadPageContent = (Invoke-WebRequest -TimeoutSec 5 -Uri 'https://www.catalog.update.microsoft.com/DownloadDialog.aspx' -Method 'POST' -Body @{updateIDs = "[$(@{updateID = $thisUpdateID} | ConvertTo-Json -Compress)]"} -ErrorAction Stop).Content
+						$downloadPageContent = (Invoke-WebRequest -UseBasicParsing -TimeoutSec 5 -Uri 'https://www.catalog.update.microsoft.com/DownloadDialog.aspx' -Method 'POST' -Body @{updateIDs = "[$(@{updateID = $thisUpdateID} | ConvertTo-Json -Compress)]"} -ErrorAction Stop).Content
 						# Initially, I couldn't figure out on my own what exactly the "Download" button within the "Search.aspx" results was POSTing to the "DownloadDialog.aspx"
 						# page to have it show the correct update download resulst, but after some searching I found this helpful example: 
 						# https://github.com/potatoqualitee/kbupdate/blob/0dcc43ff15ec9275fbbd850af56a307e2fbc438f/public/Get-KbUpdate.ps1#L596-L598
@@ -517,14 +529,14 @@ foreach ($thisWindowsMajorVersion in $windowsMajorVersions) {
 								$thisUpdateIntendedSHA256 = $null
 								if ($updateSHA256matches.Count -eq $updateURLMatches.Count) {
 									$thisUpdateIntendedSHA256 = ((([System.Convert]::FromBase64String($updateSHA256matches[$thisUpdateMatchIndex].Groups[1].Value.Trim()) | Format-Hex).Bytes | ForEach-Object { '{0:x2}' -f $_ }) -Join '').ToUpper()
-									# The SHA256 hash from Windows Update Catalog is BASE64 rather than the HEX that "Get-FileHash" outputs, so convert it to HEX.
+									# The SHA256 hash from Microsoft Update Catalog is BASE64 rather than the HEX that "Get-FileHash" outputs, so convert it to HEX.
 									# Code based on: https://learn.microsoft.com/en-us/power-automate/desktop-flows/how-to/convert-base64-hexadecimal-format & https://stackoverflow.com/a/48373145
 								}
 
 								$thisUpdateIntendedSHA1 = $null
 								if ($updateSHA1matches.Count -eq $updateURLMatches.Count) {
 									$thisUpdateIntendedSHA1 = ((([System.Convert]::FromBase64String($updateSHA1matches[$thisUpdateMatchIndex].Groups[1].Value.Trim()) | Format-Hex).Bytes | ForEach-Object { '{0:x2}' -f $_ }) -Join '').ToUpper()
-									# The SHA1 hash from Windows Update Catalog is BASE64 rather than the HEX that "Get-FileHash" outputs, so convert it to HEX.
+									# The SHA1 hash from Microsoft Update Catalog is BASE64 rather than the HEX that "Get-FileHash" outputs, so convert it to HEX.
 									# Code based on: https://learn.microsoft.com/en-us/power-automate/desktop-flows/how-to/convert-base64-hexadecimal-format & https://stackoverflow.com/a/48373145
 								}
 
@@ -1088,7 +1100,11 @@ foreach ($thisWindowsMajorVersion in $windowsMajorVersions) {
 
 				$excludedCompareWinReWimContentPaths = @('\Windows\servicing\', '\Windows\System32\CatRoot\', '\Windows\System32\DriverStore\FileRepository\', '\Windows\WinSxS\') # Exclude these paths from the difference comparison because these are the paths we expect to be different.
 				if (($thisWindowsMajorVersion -eq '10') -and ($thisWindowsFeatureVersion -eq '22H2')) { # NOTE: The following added exclusions are only relevant to each feature version since a new feature version will not contain stuff remove in previous cumulative updates to the prior feature version.
-					$excludedCompareWinReWimContentPaths += '\Users\Default\AppData\Roaming\Microsoft\Windows\Start Menu\Programs\Accessories\' # This one folder outside of the previously excluded paths will be moved to "\ProgramData\Microsoft\Windows\Start Menu\Programs\Accessories\" within the updated WinRE 10 image (but not the WinRE 11 image), so don't error when it doesn't exist.
+					$excludedCompareWinReWimContentPaths += @(
+						'\Users\Default\AppData\Roaming\Microsoft\Windows\Start Menu\Programs\Accessories\' # This folder outside of the previously excluded paths will be moved to "\ProgramData\Microsoft\Windows\Start Menu\Programs\Accessories\" within the updated WinRE 10 image (but not the WinRE 11 image), so don't error when it doesn't exist.
+						'\Windows\Boot\PXE\qps-ploc\' # These 2 PXE folders outside of the previously excluded paths will be removed within the updated WinRE 10 image (but not the WinRE 11 image), so don't error when they don't exist.
+						'\Windows\Boot\PXE\qps-plocm\'
+					)
 				}
 
 				$sourceWinReWimContentPaths = Get-WindowsImageContent -ImagePath "$systemTempDir\mountOS\Windows\System32\Recovery\Winre.wim" -Index 1 | Select-String $excludedCompareWinReWimContentPaths -SimpleMatch -NotMatch # Exclude paths from the source lists since it's more efficient than letting them be compared and ignoring them from the results.

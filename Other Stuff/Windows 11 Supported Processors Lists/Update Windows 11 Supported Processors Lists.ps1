@@ -46,7 +46,7 @@ foreach ($thisProcessorBrand in $processorBrands) {
 
 		$tableContents = ''
 		try {
-			$tableContents = [System.IO.StreamReader]::new((Invoke-WebRequest -TimeoutSec 5 -Uri $thisSupportedProcessorsURL -ErrorAction Stop).RawContentStream).ReadToEnd()
+			$tableContents = [System.IO.StreamReader]::new((Invoke-WebRequest -UseBasicParsing -TimeoutSec 5 -Uri $thisSupportedProcessorsURL -ErrorAction Stop).RawContentStream).ReadToEnd()
 			# Parse the "RawContentStream" instead of "Content" so that multi-byte characters (® and ™) don't get mangled: https://www.reddit.com/r/PowerShell/comments/17h8koy/comment/k6otsr1
 		} catch {
 			Write-Host "SUPPORTED PROCESSOR LIST HTTP ERROR: $($_.Exception.Response.StatusCode)"
@@ -99,7 +99,7 @@ foreach ($thisProcessorBrand in $processorBrands) {
 								$processorSeriesURLCache["$thisProcessorSeriesDescription - $thisProcessorSeriesURL"] = @()
 
 								try {
-									$thisProcessorSeriesTableContents = [System.IO.StreamReader]::new((Invoke-WebRequest -UserAgent 'curl' -TimeoutSec 5 -Uri $thisProcessorSeriesURL -ErrorAction Stop).RawContentStream).ReadToEnd()
+									$thisProcessorSeriesTableContents = [System.IO.StreamReader]::new((Invoke-WebRequest -UseBasicParsing -UserAgent 'curl' -TimeoutSec 5 -Uri $thisProcessorSeriesURL -ErrorAction Stop).RawContentStream).ReadToEnd()
 									# NOTE: If the default PowerShell user agent string is used, the request is "Forbidden", but with the "curl" user agent string the page loads properly.
 								} catch {
 									Write-Host "PROCESSOR SERIES HTTP ERROR: $($_.Exception.Response.StatusCode)"

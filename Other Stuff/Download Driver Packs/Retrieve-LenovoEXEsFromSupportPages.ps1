@@ -16,17 +16,17 @@
 
 $ProgressPreference = 'SilentlyContinue' # Not showing progress makes "Invoke-WebRequest" downloads MUCH faster: https://stackoverflow.com/a/43477248
 
-if (Test-Path "$PSScriptRoot\DriverPackCatalog-LenovoV1.xml") {
-	Remove-Item "$PSScriptRoot\DriverPackCatalog-LenovoV1.xml" -Force
+if (Test-Path "$PSScriptRoot\Driver Pack Catalogs\DriverPackCatalog-LenovoV1.xml") {
+	Remove-Item "$PSScriptRoot\Driver Pack Catalogs\DriverPackCatalog-LenovoV1.xml" -Force
 }
 
 if ($IsWindows -or ($null -eq $IsWindows)) {
 	[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12, [Net.SecurityProtocolType]::Ssl3
 }
 
-Invoke-WebRequest -Uri 'https://download.lenovo.com/cdrt/td/catalog.xml' -OutFile "$PSScriptRoot\DriverPackCatalog-LenovoV1.xml"
+Invoke-WebRequest -Uri 'https://download.lenovo.com/cdrt/td/catalog.xml' -OutFile "$PSScriptRoot\Driver Pack Catalogs\DriverPackCatalog-LenovoV1.xml"
 
-[xml]$lenovoDriverPackCatalogXMLv1 = Get-Content "$PSScriptRoot/DriverPackCatalog-LenovoV1.xml"
+[xml]$lenovoDriverPackCatalogXMLv1 = Get-Content "$PSScriptRoot\Driver Pack Catalogs\DriverPackCatalog-LenovoV1.xml"
 
 $supportPagesForSystemIDs = @{}
 
@@ -105,7 +105,7 @@ Write-Output "$($uniqueSupportPages.Count) LENOVO URLs DETECTED IN V1 XML"
 
 Write-Output "`n`nLoading Selenium WebDriver..."
 
-Import-Module "$PSScriptRoot\Selenium" -Force -ErrorAction Stop # This is a manual download/extraction of https://www.powershellgallery.com/packages/Selenium/3.0.1 (".nupkg" is actuall just a ".zip")
+Import-Module "$PSScriptRoot\Selenium" -Force -ErrorAction Stop # This is a manual download/extraction of https://www.powershellgallery.com/packages/Selenium (".nupkg" is actuall just a ".zip")
 
 $webDriver = New-Object OpenQA.Selenium.Firefox.FirefoxDriver # The Selenium module loaded above has "geckodriver.exe" included in it, but Firefox app must be installed on the system.
 
@@ -156,125 +156,139 @@ $linkLoadCount = 1
 $allDriversForURLs = @{}
 
 foreach ($thisLenovoURL in $uniqueSupportPages) {
-	Write-Output "`n$linkLoadCount ----------"
-	Write-Output "LOADING URL: $thisLenovoURL"
-	$allDriversForURLs[$thisLenovoURL] = @()
+	for ($thisURLattempt = 0; $thisURLattempt -lt 3; $thisURLattempt ++) {
+		try {
+			Write-Output "`n$linkLoadCount ----------"
+			Write-Output "LOADING URL: $thisLenovoURL"
+			$allDriversForURLs[$thisLenovoURL] = @()
 
-	$didSkipDrivers = $false
+			$didSkipDrivers = $false
 
-	$webDriver.Navigate().GoToURL($thisLenovoURL)
+			$webDriver.Navigate().GoToURL($thisLenovoURL)
 
-	$pageTitle = $webDriver.FindElementsByTagName('h1').GetAttribute('innerText')
+			$pageTitle = $webDriver.FindElementsByTagName('h1').GetAttribute('innerText')
 
-	Write-Output "PAGE TITLE: '$pageTitle'"
+			Write-Output "PAGE TITLE: '$pageTitle'"
 
-	$allDriversForURLs[$thisLenovoURL] = @()
+			foreach ($thisPageLink in $webDriver.FindElementsByXPath('//div/div/div/div/a')) {
+				$thisPageLinkHref = $thisPageLink.GetAttribute('href')
+				if (($null -ne $thisPageLinkHref) -and $thisPageLinkHref.ToLower().EndsWith('.exe')) {
+					Write-Output '-----'
 
-	foreach ($thisPageLink in $webDriver.FindElementsByXPath('//div/div/div/div/a')) {
-		$thisPageLinkHref = $thisPageLink.GetAttribute('href')
-		if (($null -ne $thisPageLinkHref) -and $thisPageLinkHref.ToLower().EndsWith('.exe')) {
-			Write-Output '-----'
+					$osVersion = $thisPageLink.FindElementByXPath('./../../../div[4]').GetAttribute('innerText')
 
-			$osVersion = $thisPageLink.FindElementByXPath('./../../../div[4]').GetAttribute('innerText')
-
-			if ($null -eq $osVersion) {
-				$osVersion = 'N/A'
-			} else {
-				$osVersion = $osVersion.Split([Environment]::NewLine)[0].Trim().ToLower()
-			}
-
-			if (($osVersion -eq '') -or ($osVersion -eq 'N/A')) { # https://support.lenovo.com/us/en/downloads/ds039169
-				if ($thisPageLinkHref.Contains('_win7_32bit')) {
-					$osVersion = 'windows 7 (32-bit)'
-				} elseif ($thisPageLinkHref.Contains('_win7_64bit')) {
-					$osVersion = 'windows 7 (64-bit)'
-				} elseif ($thisPageLinkHref.Contains('_win8_64bit')) {
-					$osVersion = 'windows 8 (64-bit)'
-				}
-			}
-
-			if ((-not $osVersion.StartsWith('windows 7')) -and (-not $osVersion.StartsWith('windows 8')) -and (-not $osVersion.StartsWith('windows 8.1')) -and (-not $osVersion.StartsWith('windows 10')) -and (-not $osVersion.StartsWith('windows 11'))) {
-				Write-Output "WARNING: SKIPPING INVALID WINDOWS VERSION `"$osVersion`""
-				$didSkipDrivers = $true
-				continue
-			} elseif ($osVersion.EndsWith(' (32-bit)')) {
-				Write-Output "NOTE: SKIPPING 32-BIT DRIVERS"
-				$didSkipDrivers = $true
-				continue
-			} elseif (-not $osVersion.Contains('-bit')) {
-				Write-Output "WARNING: NO BIT SPECIFIED"
-			}
-
-			$packageTitle = $thisPageLink.FindElementByXPath('./../../../div[1]').GetAttribute('innerText')
-
-			if ($null -eq $packageTitle) {
-				$packageTitle = 'N/A'
-			} else {
-				$packageTitle = $packageTitle.Split([Environment]::NewLine)[0].Trim()
-			}
-
-			if ($osVersion.StartsWith('windows 10') -or $osVersion.StartsWith('windows 11')) {
-				$possibleFeatureVersion = $packageTitle.ToLower()
-				if ($possibleFeatureVersion.Contains('version ')) {
-					$possibleFeatureVersion = ($possibleFeatureVersion -Split ('version ')) | Select-Object -Last 1 # Must use -Split and parens around arg to split on string instead of char.
-					if ($possibleFeatureVersion.Contains(',') -or $possibleFeatureVersion.Contains('/')) {
-						$possibleFeatureVersionSplitString = ','
-						if ($possibleFeatureVersion.Contains('/')) {
-							$possibleFeatureVersionSplitString = '/'
-						}
-
-						$possibleFeatureVersion = $possibleFeatureVersion.Split($possibleFeatureVersionSplitString) | Select-Object -Last 1
-					}
-
-					$possibleFeatureVersion = ($possibleFeatureVersion -Replace '[^0-9h]').ToUpper()
-					if ($possibleFeatureVersion.length -eq 4) {
-						$osVersion = $osVersion -Replace 'windows 10', "Windows 10 (Version $possibleFeatureVersion)"
-						$osVersion = $osVersion -Replace 'windows 11', "Windows 11 (Version $possibleFeatureVersion)"
+					if ($null -eq $osVersion) {
+						$osVersion = 'N/A'
 					} else {
-						Write-Output "WARNING: INVALID FEATURE VERSION IN `"$possibleFeatureVersion`""
+						$osVersion = $osVersion.Split([Environment]::NewLine)[0].Trim().ToLower()
 					}
-				} else {
-					Write-Output "WARNING: NO FEATURE VERSION IN `"$possibleFeatureVersion`""
+
+					if (($osVersion -eq '') -or ($osVersion -eq 'N/A')) { # https://support.lenovo.com/us/en/downloads/ds039169
+						if ($thisPageLinkHref.Contains('_win7_32bit')) {
+							$osVersion = 'windows 7 (32-bit)'
+						} elseif ($thisPageLinkHref.Contains('_win7_64bit')) {
+							$osVersion = 'windows 7 (64-bit)'
+						} elseif ($thisPageLinkHref.Contains('_win8_64bit')) {
+							$osVersion = 'windows 8 (64-bit)'
+						}
+					}
+
+					if ((-not $osVersion.StartsWith('windows 7')) -and (-not $osVersion.StartsWith('windows 8')) -and (-not $osVersion.StartsWith('windows 8.1')) -and (-not $osVersion.StartsWith('windows 10')) -and (-not $osVersion.StartsWith('windows 11'))) {
+						Write-Output "WARNING: SKIPPING INVALID WINDOWS VERSION `"$osVersion`""
+						$didSkipDrivers = $true
+						continue
+					} elseif ($osVersion.EndsWith(' (32-bit)')) {
+						Write-Output "NOTE: SKIPPING 32-BIT DRIVERS"
+						$didSkipDrivers = $true
+						continue
+					} elseif (-not $osVersion.Contains('-bit')) {
+						Write-Output "WARNING: NO BIT SPECIFIED"
+					}
+
+					$packageTitle = $thisPageLink.FindElementByXPath('./../../../div[1]').GetAttribute('innerText')
+
+					if ($null -eq $packageTitle) {
+						$packageTitle = 'N/A'
+					} else {
+						$packageTitle = $packageTitle.Split([Environment]::NewLine)[0].Trim()
+					}
+
+					if ($osVersion.StartsWith('windows 10') -or $osVersion.StartsWith('windows 11')) {
+						$possibleFeatureVersion = $packageTitle.ToLower()
+						if ($possibleFeatureVersion.Contains('version ')) {
+							$possibleFeatureVersion = ($possibleFeatureVersion -Split ('version ')) | Select-Object -Last 1 # Must use -Split and parens around arg to split on string instead of char.
+							if ($possibleFeatureVersion.Contains(',') -or $possibleFeatureVersion.Contains('/')) {
+								$possibleFeatureVersionSplitString = ','
+								if ($possibleFeatureVersion.Contains('/')) {
+									$possibleFeatureVersionSplitString = '/'
+								}
+
+								$possibleFeatureVersion = $possibleFeatureVersion.Split($possibleFeatureVersionSplitString) | Select-Object -Last 1
+							}
+
+							$possibleFeatureVersion = ($possibleFeatureVersion -Replace '[^0-9h]').ToUpper()
+							if ($possibleFeatureVersion.length -eq 4) {
+								$osVersion = $osVersion -Replace 'windows 10', "Windows 10 (Version $possibleFeatureVersion)"
+								$osVersion = $osVersion -Replace 'windows 11', "Windows 11 (Version $possibleFeatureVersion)"
+							} else {
+								Write-Output "WARNING: INVALID FEATURE VERSION IN `"$possibleFeatureVersion`""
+							}
+						} else {
+							Write-Output "WARNING: NO FEATURE VERSION IN `"$possibleFeatureVersion`""
+						}
+					}
+
+					$osVersion = $osVersion -Replace 'windows ', 'Windows '
+
+					$thisDriverPack = [ordered]@{
+						PageTitle = $pageTitle
+						DownloadURL = $thisPageLinkHref
+						PackageTitle = $packageTitle
+						ReleaseDate = $thisPageLink.FindElementByXPath('./../../../div[5]').GetAttribute('innerText')
+						Version = $thisPageLink.FindElementByXPath('./../../../div[3]').GetAttribute('innerText')
+						OS = $osVersion
+						HashType = $thisPageLink.FindElementByXPath('./../../../../following-sibling::div[@class="table-children-description"]//span[@class="checksum-code-name"]').GetAttribute('innerText')
+						Hash = $thisPageLink.FindElementByXPath('./../../../../following-sibling::div[@class="table-children-description"]//span[@class="checksum-code-text"]').GetAttribute('innerText')
+					}
+
+					$allDriversForURLs[$thisLenovoURL] += $thisDriverPack
+
+					Write-Output "DownloadURL: '$($thisDriverPack.DownloadURL)'"
+					Write-Output "PackageTitle: '$($thisDriverPack.PackageTitle)'"
+					Write-Output "ReleaseDate: '$($thisDriverPack.ReleaseDate)'"
+					Write-Output "Version: '$($thisDriverPack.Version)'"
+					Write-Output "OS: '$($thisDriverPack.OS)'"
+					Write-Output "HashType: '$($thisDriverPack.HashType)'"
+					Write-Output "Hash: '$($thisDriverPack.Hash)'"
 				}
 			}
 
-			$osVersion = $osVersion -Replace 'windows ', 'Windows '
-
-			$thisDriverPack = [ordered]@{
-				PageTitle = $pageTitle
-				DownloadURL = $thisPageLinkHref
-				PackageTitle = $packageTitle
-				ReleaseDate = $thisPageLink.FindElementByXPath('./../../../div[5]').GetAttribute('innerText')
-				Version = $thisPageLink.FindElementByXPath('./../../../div[3]').GetAttribute('innerText')
-				OS = $osVersion
-				HashType = $thisPageLink.FindElementByXPath('./../../../../following-sibling::div[@class="table-children-description"]//span[@class="checksum-code-name"]').GetAttribute('innerText')
-				Hash = $thisPageLink.FindElementByXPath('./../../../../following-sibling::div[@class="table-children-description"]//span[@class="checksum-code-text"]').GetAttribute('innerText')
+			if ($allDriversForURLs[$thisLenovoURL].Count -eq 0) {
+				if ($didSkipDrivers) {
+					Write-Output 'WARNING: NO 64-BIT DRIVERS DETECTED'
+				} else {
+					Write-Output 'ERROR: FAILED TO DETECT DRIVERS'
+				}
 			}
 
-			$allDriversForURLs[$thisLenovoURL] += $thisDriverPack
+			$linkLoadCount ++
 
-			Write-Output "DownloadURL: '$($thisDriverPack.DownloadURL)'"
-			Write-Output "PackageTitle: '$($thisDriverPack.PackageTitle)'"
-			Write-Output "ReleaseDate: '$($thisDriverPack.ReleaseDate)'"
-			Write-Output "Version: '$($thisDriverPack.Version)'"
-			Write-Output "OS: '$($thisDriverPack.OS)'"
-			Write-Output "HashType: '$($thisDriverPack.HashType)'"
-			Write-Output "Hash: '$($thisDriverPack.Hash)'"
+			break
+		} catch {
+			Write-Host "ERROR: $_" -ForegroundColor Red
+			Write-Output "`n`nRestarting Selenium WebDriver..."
+
+			try {
+				$webDriver.Close()
+				$webDriver.Quit()
+			} catch {}
+
+			$webDriver = New-Object OpenQA.Selenium.Firefox.FirefoxDriver
 		}
 	}
-
-	if ($allDriversForURLs[$thisLenovoURL].Count -eq 0) {
-		if ($didSkipDrivers) {
-			Write-Output 'WARNING: NO 64-BIT DRIVERS DETECTED'
-		} else {
-			Write-Output 'ERROR: FAILED TO DETECT DRIVERS'
-		}
-	}
-
-	$linkLoadCount ++
 }
 
-$allDriversForURLs | Export-Clixml -Path "$PSScriptRoot\DriverPackCatalog-LenovoV1-EXEsFromSupportPages.xml"
+$allDriversForURLs | Export-Clixml -Path "$PSScriptRoot\Driver Pack Catalogs\DriverPackCatalog-LenovoV1-EXEsFromSupportPages.xml"
 
 Write-Output "`n"
 

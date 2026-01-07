@@ -28,7 +28,7 @@
 # WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 #
 
-# Version: 2025.11.10-1
+# Version: 2025.12.29-1
 
 #Requires -RunAsAdministrator
 
@@ -120,164 +120,423 @@ if (-not $onlyCacheDriversMode) { # Only do this verification and setup if not o
 			# Do not show separate title (or success message) for the following Windows 11 compatibility checks as they falls under the "Verifying That This Computer Is Ready to Be Completed" phase.
 			# https://www.microsoft.com/en-us/windows/windows-11-specifications
 
-			$tpmSpecVersionString = (Get-CimInstance 'Win32_TPM' -Namespace 'ROOT\CIMV2\Security\MicrosoftTPM' -ErrorAction SilentlyContinue).SpecVersion
-			$win11compatibleTPM = $false
+			$cpuInfo = (Get-CimInstance 'Win32_Processor' -Property 'AddressWidth', 'NumberOfLogicalProcessors', 'Architecture', 'Manufacturer', 'Name' -ErrorAction SilentlyContinue)
 
-			if ($null -ne $tpmSpecVersionString) {
-				$tpmSpecVersionString = $tpmSpecVersionString.Split(',')[0] # Use the first value in the "SpecVersion" comma separated string instead of "PhysicalPresenseVersionInfo" since the latter can be inaccurate when the former is correct.
-				$win11compatibleTPM = ((($tpmSpecVersionString -Replace '[^0-9.]', '') -as [double]) -ge 2.0)
-			} else {
-				$tpmSpecVersionString = 'UNKNOWN'
-			}
+			$win11compatibleArchitecture = ($cpuInfo.AddressWidth -eq 64)
+			$win11compatibleCPUcores = ($cpuInfo.NumberOfLogicalProcessors -ge 2)
+			# NOTE: DO NOT check "MaxClockSpeed" because sometimes the detected speed is inaccurate and under 1 Ghz which would cause the check to fail even though the CPU is otherwise compatible and is actually faster.
 
-			# Check for SSE4.2 support (even though it should be supported on every compatible CPU): https://www.tomshardware.com/software/windows/microsoft-updates-windows-11-24h2-requirements-cpu-must-support-sse42-or-the-os-will-not-boot
-			$processorFeatureFunctionTypes = Add-Type -PassThru -Name ProcessorFeature -MemberDefinition @'
-[DllImport("kernel32")]
-public static extern bool IsProcessorFeaturePresent(uint ProcessorFeature);
-'@ # Based On: https://superuser.com/a/1861418
+			# The following CPU Family Validation code comes directly from "HardwareReadiness.ps1" (https://aka.ms/HWReadinessScript) by Microsoft.
+			# https://techcommunity.microsoft.com/blog/microsoftintuneblog/understanding-readiness-for-windows-11-with-microsoft-endpoint-manager/2770866
+			# Also, other checks are based on or adapted from the checks in "HardwareReadiness.ps1" as well as original code.
 
-			$win11compatibleSSE4dot2 = $processorFeatureFunctionTypes::IsProcessorFeaturePresent(38) # 38 = PF_SSE4_2_INSTRUCTIONS_AVAILABLE
+			# Code from "HardwareReadiness.ps1" is MIT Licensed: Copyright (c) 2021 Microsoft Corporation
 
-			$win11compatibleStorage = $false
-			if ((Get-Partition -DriveLetter (Get-CimInstance 'Win32_OperatingSystem' -Property 'SystemDrive' -ErrorAction SilentlyContinue).SystemDrive.Replace(':', '') -ErrorAction SilentlyContinue | Get-Disk -ErrorAction SilentlyContinue).Size -ge 55GB) {
-				# NOT using "Storage Available" from WhyNotWin11 below because it will get the VOLUME size which could be smaller after formatting and a Recovery Volume is partitioned rather than checking the WHOLE DISK size which I believe is the actual requirement.
-				# Allowing 55 GB or more since some drives marketed as 64 GB (the specified requirement) can be a few GB under (seen first hand a drive marketed as 64 GB actually be 58 GB, but give a little more leeway than that just to be sure all drives marketed as 64 GB are allowed).
-				$win11compatibleStorage = $true
-			}
+			# Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation
+			# files (the "Software"), to deal in the Software without restriction, including without limitation the rights to use, copy,
+			# modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software
+			# is furnished to do so, subject to the following conditions:
 
-			$eleventhToThirteenthGenIntelCPU = $false
-			$cpuInfo = (Get-CimInstance 'Win32_Processor' -Property 'Manufacturer', 'Name' -ErrorAction SilentlyContinue)
-			if ($cpuInfo.Manufacturer -and $cpuInfo.Name -and $cpuInfo.Manufacturer.ToUpper().Contains('INTEL') -and $cpuInfo.Name.ToUpper().Contains(' GEN ')) {
-				# "Manufacturer" should be "GenuineIntel" for all Intel processors, but do a case-insenstive check anything that contains "INTEL" just to be safe.
-				# Only 11th-13th Gen Intel CPUs contain " Gen " in their model name strings, and they will always be compatible with Windows 11.
-				# This boolean will be used as a fallback to the "win11compatibleCPUmodel" check done by WhyNotWin11 below in case WhyNotWin11
-				# is not updated promptly and we run into a newer CPU that is not yet in the WhyNotWin11 list of compatible CPUs.
-				$eleventhToThirteenthGenIntelCPU = $true
-			}
+			# The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.
 
-			if (Test-Path "$Env:SystemDrive\Install\Diagnostic Tools\WhyNotWin11.exe") { # Use WhyNotWin11 to help detect if the exact CPU model is compatible and more: https://github.com/rcmaehl/WhyNotWin11
-				Remove-Item "$Env:SystemDrive\Install\WhyNotWin11 Log.csv" -Force -ErrorAction SilentlyContinue
-				Start-Process "$Env:SystemDrive\Install\Diagnostic Tools\WhyNotWin11.exe" -NoNewWindow -Wait -ArgumentList '/export', 'CSV', "`"$Env:SystemDrive\Install\WhyNotWin11 Log.csv`"", '/skip', 'CPUFreq,Storage', '/silent', '/force' -ErrorAction SilentlyContinue
-			}
+			# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE
+			# WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR
+			# COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
+			# ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
-			$win11compatibleArchitecture = $false
-			$win11compatibleBootMethod = $false
-			$win11compatibleCPUmodel = $false
-			$win11compatibleCPUcores = $false
-			$win11compatibleGPU = $false
-			$win11compatiblePartitionType = $false
-			$win11compatibleRAM = $false
-			$win11compatibleSecureBoot = $false
-			$win11compatibleTPMfromWhyNotWin11 = $false
-			$checkedWithWhyNotWin11 = $false
+			Add-Type -TypeDefinition @'
+using Microsoft.Win32;
+using System;
+using System.Runtime.InteropServices;
 
-			if (Test-Path "$Env:SystemDrive\Install\WhyNotWin11 Log.csv") {
-				$whyNotWin11LogLastLine = Get-Content "$Env:SystemDrive\Install\WhyNotWin11 Log.csv" -Last 1
+public class CpuFamilyResult {
+	public bool IsValid { get; set; }
+	public string Message { get; set; }
+}
 
-				if ($null -ne $whyNotWin11LogLastLine) {
-					$whyNotWin11LogValues = $whyNotWin11LogLastLine.Split(',')
+public class CpuFamily {
+	[StructLayout(LayoutKind.Sequential)]
+	public struct SYSTEM_INFO {
+		public ushort ProcessorArchitecture;
+		ushort Reserved;
+		public uint PageSize;
+		public IntPtr MinimumApplicationAddress;
+		public IntPtr MaximumApplicationAddress;
+		public IntPtr ActiveProcessorMask;
+		public uint NumberOfProcessors;
+		public uint ProcessorType;
+		public uint AllocationGranularity;
+		public ushort ProcessorLevel;
+		public ushort ProcessorRevision;
+	}
 
-					if ($whyNotWin11LogValues.Count -eq 12) {
-						# Index 0 is "Hostname" which is not useful for these Windows 11 compatibility checks.
-						$win11compatibleArchitecture = ($whyNotWin11LogValues[1] -eq 'True')
-						$win11compatibleBootMethod = ($whyNotWin11LogValues[2] -eq 'True')
-						$win11compatibleCPUmodel = ($whyNotWin11LogValues[3] -eq 'True')
-						$win11compatibleCPUcores = ($whyNotWin11LogValues[4] -eq 'True')
-						# Index 5 is "CPU Frequency" which we are ignoring (and also SKIPPED with arguments in the command above) because sometimes the detected speed is inaccurate and under 1 Ghz which causes this check to fail even though the CPU is in the compatible list and is actually faster.
-						$win11compatibleGPU = ($whyNotWin11LogValues[6] -eq 'True')
-						$win11compatiblePartitionType = ($whyNotWin11LogValues[7] -eq 'True')
-						$win11compatibleRAM = ($whyNotWin11LogValues[8] -eq 'True')
-						$win11compatibleSecureBoot = ($whyNotWin11LogValues[9] -eq 'True')
-						# Index 10 is "Storage Available" which we are ignoring (and also SKIPPED with arguments in the command above) and checking manually above since WhyNotWin11 will get the VOLUME size which could be smaller after formatting and a Recovery Volume is partitioned rather than checking the WHOLE DISK size which I believe is the actual requirement.
-						$win11compatibleTPMfromWhyNotWin11 = ($whyNotWin11LogValues[11] -eq 'True') # We already manually checked TPM version, but doesn't hurt to confirm that WinNotWin11 agrees.
+	[DllImport("kernel32.dll")]
+	internal static extern void GetNativeSystemInfo(ref SYSTEM_INFO lpSystemInfo);
 
-						$checkedWithWhyNotWin11 = $true
+	public enum ProcessorFeature : uint {
+		ARM_SUPPORTED_INSTRUCTIONS = 34
+	}
+
+	[DllImport("kernel32.dll")]
+	[return: MarshalAs(UnmanagedType.Bool)]
+	static extern bool IsProcessorFeaturePresent(ProcessorFeature processorFeature);
+
+	private const ushort PROCESSOR_ARCHITECTURE_X86 = 0;
+	private const ushort PROCESSOR_ARCHITECTURE_ARM64 = 12;
+	private const ushort PROCESSOR_ARCHITECTURE_X64 = 9;
+
+	private const string INTEL_MANUFACTURER = "GenuineIntel";
+	private const string AMD_MANUFACTURER = "AuthenticAMD";
+	private const string QUALCOMM_MANUFACTURER = "Qualcomm Technologies Inc";
+
+	public static CpuFamilyResult Validate(string manufacturer, ushort processorArchitecture) {
+		CpuFamilyResult cpuFamilyResult = new CpuFamilyResult();
+
+		if (string.IsNullOrWhiteSpace(manufacturer)) {
+			cpuFamilyResult.IsValid = false;
+			cpuFamilyResult.Message = "Manufacturer is null or empty";
+			return cpuFamilyResult;
+		}
+
+		string registryPath = "HKEY_LOCAL_MACHINE\\Hardware\\Description\\System\\CentralProcessor\\0";
+		SYSTEM_INFO sysInfo = new SYSTEM_INFO();
+		GetNativeSystemInfo(ref sysInfo);
+
+		switch (processorArchitecture) {
+			case PROCESSOR_ARCHITECTURE_ARM64:
+
+				if (manufacturer.Equals(QUALCOMM_MANUFACTURER, StringComparison.OrdinalIgnoreCase)) {
+					bool isArmv81Supported = IsProcessorFeaturePresent(ProcessorFeature.ARM_SUPPORTED_INSTRUCTIONS);
+
+					if (!isArmv81Supported) {
+						string registryName = "CP 4030";
+						long registryValue = (long)Registry.GetValue(registryPath, registryName, -1);
+						long atomicResult = (registryValue >> 20) & 0xF;
+
+						if (atomicResult >= 2) {
+							isArmv81Supported = true;
+						}
 					}
+
+					cpuFamilyResult.IsValid = isArmv81Supported;
+					cpuFamilyResult.Message = isArmv81Supported ? "" : "Processor does not implement ARM v8.1 atomic instruction";
+				} else {
+					cpuFamilyResult.IsValid = false;
+					cpuFamilyResult.Message = "The processor isn't currently supported for Windows 11";
+				}
+
+				break;
+
+			case PROCESSOR_ARCHITECTURE_X64:
+			case PROCESSOR_ARCHITECTURE_X86:
+
+				int cpuFamily = sysInfo.ProcessorLevel;
+				int cpuModel = (sysInfo.ProcessorRevision >> 8) & 0xFF;
+				int cpuStepping = sysInfo.ProcessorRevision & 0xFF;
+
+				if (manufacturer.Equals(INTEL_MANUFACTURER, StringComparison.OrdinalIgnoreCase)) {
+					try {
+						cpuFamilyResult.IsValid = true;
+						cpuFamilyResult.Message = "";
+
+						if (cpuFamily >= 6 && cpuModel <= 95 && !(cpuFamily == 6 && cpuModel == 85)) {
+							cpuFamilyResult.IsValid = false;
+							cpuFamilyResult.Message = "";
+						} else if (cpuFamily == 6 && (cpuModel == 142 || cpuModel == 158) && cpuStepping == 9) {
+							string registryName = "Platform Specific Field 1";
+							int registryValue = (int)Registry.GetValue(registryPath, registryName, -1);
+
+							if ((cpuModel == 142 && registryValue != 16) || (cpuModel == 158 && registryValue != 8)) {
+								cpuFamilyResult.IsValid = false;
+							}
+							cpuFamilyResult.Message = "PlatformId " + registryValue;
+						}
+					} catch (Exception ex) {
+						cpuFamilyResult.IsValid = false;
+						cpuFamilyResult.Message = "Exception:" + ex.GetType().Name;
+					}
+				} else if (manufacturer.Equals(AMD_MANUFACTURER, StringComparison.OrdinalIgnoreCase)) {
+					cpuFamilyResult.IsValid = true;
+					cpuFamilyResult.Message = "";
+
+					if (cpuFamily < 23 || (cpuFamily == 23 && (cpuModel == 1 || cpuModel == 17))) {
+						cpuFamilyResult.IsValid = false;
+					}
+				} else {
+					cpuFamilyResult.IsValid = false;
+					cpuFamilyResult.Message = "Unsupported Manufacturer: " + manufacturer + ", Architecture: " + processorArchitecture + ", CPUFamily: " + sysInfo.ProcessorLevel + ", ProcessorRevision: " + sysInfo.ProcessorRevision;
+				}
+
+				break;
+
+			default:
+				cpuFamilyResult.IsValid = false;
+				cpuFamilyResult.Message = "Unsupported CPU category. Manufacturer: " + manufacturer + ", Architecture: " + processorArchitecture + ", CPUFamily: " + sysInfo.ProcessorLevel + ", ProcessorRevision: " + sysInfo.ProcessorRevision;
+				break;
+		}
+
+		return cpuFamilyResult;
+	}
+}
+'@
+
+			$win11validateCPUmodelResult = [CpuFamily]::Validate([String]$cpuInfo.Manufacturer, [uint16]$cpuInfo.Architecture)
+			$win11compatibleCPUmodel = $win11validateCPUmodelResult.IsValid
+			$win11incompatibleCPUmodelMessage = $win11validateCPUmodelResult.Message
+
+			# "HardwareReadiness.ps1" also has a specific override check to allow the i7-7820HQ CPU when it is in a Surface Studio 2 or Precision 5520, so also include this override.
+			if ((-not $win11compatibleCPUmodel) -and ($null -ne $cpuInfo.Name) -and $cpuInfo.Name.ToLower().Contains('i7-7820hq cpu @ 2.90ghz')) {
+				$computerSystemModel = (Get-CimInstance 'Win32_ComputerSystem' -Property 'Model').Model
+				$win11compatibleCPUmodel = (($null -ne $computerSystemModel) -and (@('surface studio 2', 'precision 5520') -contains $computerSystemModel.Trim().ToLower()))
+			}
+
+			$totalRAMbytes = (Get-CimInstance 'Win32_PhysicalMemory' -Filter 'TypeDetail <> "4096"' -Property 'Capacity' -ErrorAction SilentlyContinue | Measure-Object -Property 'Capacity' -Sum -ErrorAction SilentlyContinue).Sum
+			# NOTE: Filter for only TypeDetail NOT EQUALS 4096 (Non-Volatile): https://docs.microsoft.com/en-us/windows/win32/cimwin32prov/win32-physicalmemory
+			$win11compatibleRAM = ($totalRAMbytes -ge 4GB)
+			$win11recommendedRAM = ($totalRAMbytes -ge 8GB)
+
+			$bootDrive = Get-Partition -DriveLetter $Env:SystemDrive.Replace(':', '') -ErrorAction SilentlyContinue | Get-Disk -ErrorAction SilentlyContinue
+
+			$bootDriveBytes = $bootDrive.Size
+			$win11compatibleStorage = ($bootDriveBytes -ge 55GB)
+			# Allowing 55 GB or more since some drives marketed as 64 GB (the specified requirement) can be a few GB under (seen first hand a drive marketed as 64 GB actually be 58 GB, but give a little more leeway than that just to be sure all drives marketed as 64 GB are allowed).
+			$win11recommendedStorage = ($bootDriveBytes -ge 95GB)
+
+			$win11compatibleGPU = $false
+			$win11incompatibleGPUmessage = ''
+			Remove-Item "$Env:SystemDrive\Install\DirectX Diagnostic Tool Output.xml" -Force -ErrorAction SilentlyContinue
+			Start-Process 'dxdiag' -NoNewWindow -Wait -ArgumentList '/whql:off', '/dontskip', '/x', "`"$Env:SystemDrive\Install\DirectX Diagnostic Tool Output.xml`"" -ErrorAction SilentlyContinue
+			if (Test-Path "$Env:SystemDrive\Install\DirectX Diagnostic Tool Output.xml") {
+				[xml]$dxdiagOutput = Get-Content "$Env:SystemDrive\Install\DirectX Diagnostic Tool Output.xml"
+
+				$gpuDirectXversion = ($dxdiagOutput.DxDiag.SystemInformation.DirectXVersion -Replace '[^0-9.]', '')
+				if ($gpuDirectXversion -eq '') {
+					$gpuDirectXversion = '0.0'
+				} elseif (-not $gpuDirectXversion.Contains('.')) {
+					$gpuDirectXversion += '.0'
+				}
+				$win11compatibleGPUdirectX = ([version]$gpuDirectXversion -ge [version]'12.0')
+
+				# Along with DirectX Version, ALSO check DDI Version and Feature Levels like WhyNotWin11 does:
+				# https://github.com/rcmaehl/WhyNotWin11/blob/342d04b82a7efe62c029eb2d6bdee27b71c87602/includes/_Checks.au3#L170-L211
+
+				$win11compatibleGPUddi = $false
+				$gpuDDIversion = ($dxdiagOutput.DxDiag.DisplayDevices.DisplayDevice.DDIVersion -Replace '[^0-9.]', '')
+				if ($gpuDDIversion -is [array]) { # May or may not be array depending on whether or not there are multiple GPUs.
+					foreach ($thisGPUddiVersion in $gpuDDIversion) {
+						if ($thisGPUddiVersion -eq '') {
+							$thisGPUddiVersion = '0.0'
+						} elseif (-not $thisGPUddiVersion.Contains('.')) {
+							$thisGPUddiVersion += '.0'
+						}
+						$win11compatibleGPUddi = ([version]$thisGPUddiVersion -ge [version]'12.0')
+
+						if (-not $win11compatibleGPUddi) { # Break after any failure to be sure ALL GPUs are supported.
+							$gpuDDIversion = $thisGPUddiVersion
+							break
+						}
+					}
+				} else {
+					if ($gpuDDIversion -eq '') {
+						$gpuDDIversion = '0.0'
+					} elseif (-not $gpuDDIversion.Contains('.')) {
+						$gpuDDIversion += '.0'
+					}
+					$win11compatibleGPUddi = ([version]$gpuDDIversion -ge [version]'12.0')
+				}
+
+				$win11compatibleGPUfeatureLevel = $false
+				$gpuFeatureLevels = (($dxdiagOutput.DxDiag.DisplayDevices.DisplayDevice.FeatureLevels -Replace '_', '.') -Replace '[^0-9.,]', '')
+				$gpuHighestFeatureLevel = ''
+				if ($gpuFeatureLevels -is [array]) { # May or may not be array depending on whether or not there are multiple GPUs.
+					foreach ($theseGPUfeatureLevels in $gpuFeatureLevels) {
+						$gpuHighestFeatureLevel = ([string[]]($theseGPUfeatureLevels.Split(',') | Sort-Object -Descending { [version]$_ } -ErrorAction SilentlyContinue))[0]
+						if ($gpuHighestFeatureLevel -eq '') {
+							$gpuHighestFeatureLevel = '0.0'
+						} elseif (-not $gpuHighestFeatureLevel.Contains('.')) {
+							$gpuHighestFeatureLevel += '.0'
+						}
+						$win11compatibleGPUfeatureLevel = ([version]$gpuHighestFeatureLevel -ge [version]'12.0')
+
+						if (-not $win11compatibleGPUfeatureLevel) { # Break after any failure to be sure ALL GPUs are supported.
+							break
+						}
+					}
+				} else {
+					$gpuHighestFeatureLevel = ([string[]]($gpuFeatureLevels.Split(',') | Sort-Object -Descending { [version]$_ } -ErrorAction SilentlyContinue))[0]
+					if ($gpuHighestFeatureLevel -eq '') {
+						$gpuHighestFeatureLevel = '0.0'
+					} elseif (-not $gpuHighestFeatureLevel.Contains('.')) {
+						$gpuHighestFeatureLevel += '.0'
+					}
+					$win11compatibleGPUfeatureLevel = ([version]$gpuHighestFeatureLevel -ge [version]'12.0')
+				}
+
+				$win11compatibleGPUwddm = $false
+				$gpuWDDMversion = ($dxdiagOutput.DxDiag.DisplayDevices.DisplayDevice.DriverModel -Replace '[^0-9.]', '')
+				if ($gpuWDDMversion -is [array]) { # May or may not be array depending on whether or not there are multiple GPUs.
+					foreach ($thisGPUwddmVersion in $gpuWDDMversion) {
+						if ($thisGPUwddmVersion -eq '') {
+							$thisGPUwddmVersion = '0.0'
+						} elseif (-not $thisGPUwddmVersion.Contains('.')) {
+							$thisGPUwddmVersion += '.0'
+						}
+						$win11compatibleGPUwddm = ([version]$thisGPUwddmVersion -ge [version]'2.0')
+
+						if (-not $win11compatibleGPUwddm) { # Break after any failure to be sure ALL GPUs are supported.
+							$gpuWDDMversion = $thisGPUwddmVersion
+							break
+						}
+					}
+				} else {
+					if ($gpuWDDMversion -eq '') {
+						$gpuWDDMversion = '0.0'
+					} elseif (-not $gpuWDDMversion.Contains('.')) {
+						$gpuWDDMversion += '.0'
+					}
+					$win11compatibleGPUwddm = ([version]$gpuWDDMversion -ge [version]'2.0')
+				}
+
+				$win11compatibleGPU = ($win11compatibleGPUdirectX -and $win11compatibleGPUddi -and $win11compatibleGPUfeatureLevel -and $win11compatibleGPUwddm)
+
+				if (-not $win11compatibleGPU) {
+					if (($null -eq $gpuDirectXversion) -or ($gpuDirectXversion -eq '') -or ($gpuDirectXversion -eq '0.0')) {
+						$gpuDirectXversion = 'UNKNOWN'
+					}
+
+					if (($null -eq $gpuDDIversion) -or ($gpuDDIversion -eq '') -or ($gpuDDIversion -eq '0.0')) {
+						$gpuDDIversion = 'UNKNOWN'
+					}
+
+					if (($null -eq $gpuHighestFeatureLevel) -or ($gpuHighestFeatureLevel -eq '') -or ($gpuHighestFeatureLevel -eq '0.0')) {
+						$gpuHighestFeatureLevel = 'UNKNOWN'
+					}
+
+					if (($null -eq $gpuWDDMversion) -or ($gpuWDDMversion -eq '') -or ($gpuWDDMversion -eq '0.0')) {
+						$gpuWDDMversion = 'UNKNOWN'
+					}
+
+					$win11incompatibleGPUmessage = "Detected DirectX $gpuDirectXversion (DDI $gpuDDIversion, Feature Level $gpuHighestFeatureLevel) + WDDM $gpuWDDMversion"
+				}
+			}
+
+			$win11compatibleBootMethod = ($Env:firmware_type -eq 'UEFI')
+
+			$win11compatibleSecureBoot = $false
+			$win11recommendedSecureBoot = $false
+			if ($win11compatibleBootMethod) {
+				try {
+					$uefiSecureBootEnabled = Confirm-SecureBootUEFI
+					$win11compatibleSecureBoot = (($uefiSecureBootEnabled -eq $true) -or ($uefiSecureBootEnabled -eq $false))
+					# Secure Boot DOES NOT need to be enabled, the computer just needs to be Secure Boot capable (following quote from: https://support.microsoft.com/en-us/windows/windows-11-and-secure-boot-a8ff1202-c0d9-42f5-940f-843abef64fad):
+					# "While the requirement to upgrade a Windows 10 device to Windows 11 is only that the PC be Secure Boot capable by having UEFI/BIOS enabled, you may also consider enabling or turning Secure Boot on for better security."
+
+					$win11recommendedSecureBoot = ($uefiSecureBootEnabled -eq $true)
+				} catch {
+					$win11compatibleSecureBoot = $false # If "Confirm-SecureBootUEFI" throws an error, the system IS NOT Secure Boot capable.
+				}
+			}
+
+			$win11compatiblePartitionType = ($bootDrive.PartitionStyle -eq 'GPT')
+
+			$win11compatibleTPM = $false
+			$tpmSpecVersionString = ''
+			if ((Get-Tpm).TpmPresent) {
+				$tpmSpecVersionString = (Get-CimInstance 'Win32_TPM' -Namespace 'ROOT\CIMV2\Security\MicrosoftTPM' -ErrorAction SilentlyContinue).SpecVersion
+				if ($null -ne $tpmSpecVersionString) {
+					$tpmSpecVersionString = ([string[]](($tpmSpecVersionString -Replace '[^0-9.,]', '').Split(',') | Sort-Object -Descending { [version]$_ } -ErrorAction SilentlyContinue))[0] # Use the highest value in the "SpecVersion" comma separated string instead of "PhysicalPresenseVersionInfo" since the latter can be inaccurate when the former is correct.
+					if ($tpmSpecVersionString -eq '') {
+						$tpmSpecVersionString = '0.0'
+					} elseif (-not $tpmSpecVersionString.Contains('.')) {
+						$tpmSpecVersionString += '.0'
+					}
+					$win11compatibleTPM = ([version]$tpmSpecVersionString -ge [version]'2.0')
 				}
 			}
 
 			Write-Host "`n    CPU Compatible: " -NoNewline
-			if (-not $win11compatibleSSE4dot2) {
-				Write-Host 'NO (SSE 4.2 Support REQUIRED)' -ForegroundColor Red
-			} elseif (-not $win11compatibleCPUcores) {
-				Write-Host 'NO (At Least Dual-Core REQUIRED)' -ForegroundColor Red
-			} elseif (-not $win11compatibleArchitecture) {
+			if (-not $win11compatibleArchitecture) {
 				# This incompatibility should never happen since we only refurbish 64-bit processors and only have 64-bit Windows installers.
 				Write-Host 'NO (64-bit REQUIRED)' -ForegroundColor Red
+			} elseif (-not $win11compatibleCPUcores) {
+				Write-Host 'NO (At Least Dual-Core REQUIRED)' -ForegroundColor Red
 			} elseif (-not $win11compatibleCPUmodel) {
-				if ($eleventhToThirteenthGenIntelCPU) {
-					Write-Host 'YES' -NoNewline -ForegroundColor Green
-					Write-Host ' (Fallback Check Passed)' -ForegroundColor Yellow
-				} else {
-					Write-Host 'NO (Model NOT Supported)' -ForegroundColor Red
+				Write-Host 'NO (Model NOT Supported)' -ForegroundColor Red
+				if (($null -ne $win11incompatibleCPUmodelMessage) -and ($win11incompatibleCPUmodelMessage -ne '')) {
+					Write-Host "      $win11incompatibleCPUmodelMessage" -ForegroundColor Yellow
 				}
 			} else {
 				Write-Host 'YES' -ForegroundColor Green
 			}
 
-			Write-Host '    RAM 4 GB or More: ' -NoNewline
-			if ($win11compatibleRAM) {
-				Write-Host 'YES' -ForegroundColor Green
+			Write-Host "`n    RAM 4 GB or More: " -NoNewline
+			if (-not $win11compatibleRAM) {
+				Write-Host "NO ($([math]::Round($totalRAMbytes / 1000 / 1000 / 1000)) GB Installed, At Least 4 GB REQUIRED, 8 GB RECOMMENDED)" -ForegroundColor Red
+				Write-Host '      YOU MAY BE ABLE TO REPLACE OR ADD MORE RAM' -ForegroundColor Yellow
+			} elseif (-not $win11recommendedRAM) {
+				Write-Host 'YES' -NoNewline -ForegroundColor Green
+				Write-Host " ($([math]::Round($totalRAMbytes / 1000 / 1000 / 1000)) GB Installed, At Least 8 GB RECOMMENDED)" -ForegroundColor Blue
+				Write-Host '      YOU MAY BE ABLE TO REPLACE OR ADD MORE RAM' -ForegroundColor Yellow
 			} else {
-				Write-Host 'NO (At Least 4 GB REQUIRED)' -ForegroundColor Red
+				Write-Host 'YES' -ForegroundColor Green
 			}
 
-			Write-Host '    Storage 64 GB or More: ' -NoNewline
-			if ($win11compatibleStorage) {
-				Write-Host 'YES' -ForegroundColor Green
+			Write-Host "`n    Storage 64 GB or More: " -NoNewline
+			if (-not $win11compatibleStorage) {
+				Write-Host "NO ($([math]::Round($bootDriveBytes / 1000 / 1000 / 1000)) GB Installed, At Least 64 GB REQUIRED, 128 GB RECOMMENDED)" -ForegroundColor Red
+				Write-Host '      YOU MAY BE ABLE TO REPLACE THIS WITH A LARGER DRIVE' -ForegroundColor Yellow
+			} elseif (-not $win11recommendedStorage) {
+				Write-Host 'YES' -NoNewline -ForegroundColor Green
+				Write-Host " ($([math]::Round($bootDriveBytes / 1000 / 1000 / 1000)) GB Installed, At Least 128 GB RECOMMENDED)" -ForegroundColor Blue
+				Write-Host '      YOU MAY BE ABLE TO REPLACE THIS WITH A LARGER DRIVE' -ForegroundColor Yellow
 			} else {
-				Write-Host 'NO (At Least 64 GB REQUIRED)' -ForegroundColor Red
+				Write-Host 'YES' -ForegroundColor Green
 			}
 
-			Write-Host '    GPU Compatible: ' -NoNewline
+			Write-Host "`n    GPU Compatible: " -NoNewline
 			if ($win11compatibleGPU) {
 				Write-Host 'YES' -ForegroundColor Green
 			} else {
 				Write-Host 'NO (DirectX 12 + WDDM 2.0 REQUIRED)' -ForegroundColor Red
+				if ($win11incompatibleGPUmessage -ne '') {
+					Write-Host "      $win11incompatibleGPUmessage" -ForegroundColor Yellow
+				}
+				Write-Host '      MAKE SURE DRIVERS ARE INSTALLED' -ForegroundColor Yellow
 			}
 
-			Write-Host '    UEFI Enabled: ' -NoNewline
+			Write-Host "`n    UEFI Enabled: " -NoNewline
 			if (-not $win11compatibleBootMethod) {
 				Write-Host 'NO (Booted in Legacy BIOS Mode)' -ForegroundColor Red
+				Write-Host '      YOU MAY BE ABLE TO ENABLE UEFI BOOTING IN THE UEFI/BIOS SETUP' -ForegroundColor Yellow
 			} elseif (-not $win11compatibleSecureBoot) {
-				# Secure Boot DOES NOT need to be enabled, the computer just needs to be Secure Boot capable: https://support.microsoft.com/en-us/windows/windows-11-and-secure-boot-a8ff1202-c0d9-42f5-940f-843abef64fad
-				# And WhyNotWin11 only verifies that the computer is Secure Boot capable, not that it is enabled: https://github.com/rcmaehl/WhyNotWin11/blob/16123e4e891e9ba90c23cffccd5876d7ab2cfef3/includes/_Checks.au3#L219 & https://github.com/rcmaehl/WhyNotWin11/blob/1a2459a8cfc754644af7e94f33762eaaca544a07/includes/WhyNotWin11_accessibility.au3#L223
-				Write-Host 'NO (NOT Secure Boot Capable)' -ForegroundColor Red
+				Write-Host 'NO (Secure Boot Capability REQUIRED)' -ForegroundColor Red
+				Write-Host '      YOU MAY BE ABLE TO ENABLE SECURE BOOT CAPABILITY IN THE UEFI/BIOS SETUP' -ForegroundColor Yellow
 			} elseif (-not $win11compatiblePartitionType) {
 				Write-Host 'NO (GPT Format REQUIRED)' -ForegroundColor Red
+			} elseif (-not $win11recommendedSecureBoot) {
+				Write-Host 'YES' -NoNewline -ForegroundColor Green
+				Write-Host ' (Enabling Secure Boot RECOMMENDED)' -ForegroundColor Blue
+				Write-Host '      YOU SHOULD BE ABLE TO ENABLE SECURE BOOT IN THE UEFI/BIOS SETUP' -ForegroundColor Yellow
 			} else {
 				Write-Host 'YES' -ForegroundColor Green
 			}
 
-			Write-Host '    TPM 2.0 Enabled: ' -NoNewline
+			Write-Host "`n    TPM 2.0 Enabled: " -NoNewline
 			if ($win11compatibleTPM) {
-				if ($win11compatibleTPMfromWhyNotWin11) {
-					Write-Host 'YES' -ForegroundColor Green
-				} else {
-					Write-Host 'MAYBE' -ForegroundColor Yellow
-				}
-			} elseif (($tpmSpecVersionString -eq 'UNKNOWN') -or ($tpmSpecVersionString -eq 'Not Supported')) {
+				Write-Host 'YES' -ForegroundColor Green
+			} elseif (($null -eq $tpmSpecVersionString) -or ($tpmSpecVersionString -eq '') -or ($tpmSpecVersionString -eq '0.0')) {
 				Write-Host 'NO (Not Detected)' -ForegroundColor Red
+				Write-Host '      YOU MAY BE ABLE TO ENABLE TPM IN THE UEFI/BIOS SETUP' -ForegroundColor Yellow
 			} else {
-				Write-Host "NO (Version $tpmSpecVersionString)" -ForegroundColor Red
+				Write-Host "NO (Version $tpmSpecVersionString Detected, At Least 2.0 REQUIRED)" -ForegroundColor Red
+				Write-Host '      SOME COMPUTERS HAVE MULTIPLE TPM VERSION OPTIONS IN THE UEFI/BIOS SETUP' -ForegroundColor Yellow
 			}
 
-			if (-not $checkedWithWhyNotWin11) {
-				Write-Host "`n  ERROR: Failed to run WhyNotWin11 to verify Windows 11 support. - THIS SHOULD NOT HAVE HAPPENED - Please inform Free Geek I.T.`n" -ForegroundColor Red
-				FocusScriptWindow
-				$Host.UI.RawUI.FlushInputBuffer() # So that key presses before this point are ignored.
-				$notWin11compatibleResponse = Read-Host '  Press ENTER to Shut Down This Computer'
-
-				if ((-not $testMode) -or ($notWin11compatibleResponse -ne 'TESTING')) { # Can bypass in test mode even if the computer isn't compatible with Windows 11.
-					Stop-Computer
-
-					exit 0 # Not sure if exit is necessary after Stop-Computer but doesn't hurt.
-				}
-			} elseif (-not $win11compatibleGPU) {
+			if (-not $win11compatibleGPU) {
 				# The GPU could not be verified in WinPE/WinRE since GPU drivers were not available, but it's generally assumed that GPUs will be compatible if everything else was compatible.
 				# So, if this check failed, we need to make sure the technician makes I.T. aware that this issue could actually happen since it was a time wasting Windows 11 installation when Windows 10 must be installed instead.
 
-				Write-Host "`n  ERROR: GPU is NOT compatible with Windows 11. - THIS IS UNEXPECTED - Please inform Free Geek I.T.`n" -ForegroundColor Red
+				Write-Host "`n  ERROR: GPU is NOT compatible with Windows 11. - THIS IS UNEXPECTED - MAKE SURE DRIVERS ARE INSTALLED - Please inform Free Geek I.T.`n" -ForegroundColor Red
 				FocusScriptWindow
 				$Host.UI.RawUI.FlushInputBuffer() # So that key presses before this point are ignored.
 				$notWin11compatibleResponse = Read-Host '  Press ENTER to Shut Down This Computer'
@@ -287,7 +546,7 @@ public static extern bool IsProcessorFeaturePresent(uint ProcessorFeature);
 
 					exit 0 # Not sure if exit is necessary after Stop-Computer but doesn't hurt.
 				}
-			} elseif ((-not $win11compatibleTPM) -or (-not $win11compatibleArchitecture) -or (-not $win11compatibleBootMethod) -or ((-not $win11compatibleCPUmodel) -and (-not $eleventhToThirteenthGenIntelCPU)) -or (-not $win11compatibleCPUcores) -or (-not $win11compatibleSSE4dot2) -or (-not $win11compatiblePartitionType) -or (-not $win11compatibleRAM) -or (-not $win11compatibleSecureBoot) -or (-not $win11compatibleStorage) -or (-not $win11compatibleTPMfromWhyNotWin11)) {
+			} elseif ((-not $win11compatibleArchitecture) -or (-not $win11compatibleCPUcores) -or (-not $win11compatibleCPUmodel) -or (-not $win11compatibleRAM) -or (-not $win11compatibleStorage) -or (-not $win11compatibleBootMethod) -or (-not $win11compatibleSecureBoot) -or (-not $win11compatiblePartitionType) -or (-not $win11compatibleTPM)) {
 				# None of the previous elseif checks should fail (unless in Test Mode) because it was all verified in WinPE before allowing Windows 11 to be installed.
 				# So, if we got here, this computer needs to be sent to Free Geek I.T. to see what went wrong.
 
@@ -530,8 +789,8 @@ public static extern bool IsProcessorFeaturePresent(uint ProcessorFeature);
 try {
 	[xml]$smbCredentialsXML = Get-Content "$Env:SystemDrive\Install\Scripts\smb-credentials.xml" -ErrorAction Stop
 
-	if ($null -eq $smbCredentialsXML.smbCredentials.driversReadWriteShare.ip) {
-		throw 'NO DRIVERS SHARE IP'
+	if ($null -eq $smbCredentialsXML.smbCredentials.driversReadWriteShare.address) {
+		throw 'NO DRIVERS SHARE ADDRESS'
 	} elseif ($null -eq $smbCredentialsXML.smbCredentials.driversReadWriteShare.shareName) {
 		throw 'NO DRIVERS SHARE NAME'
 	} elseif ($null -eq $smbCredentialsXML.smbCredentials.driversReadWriteShare.username) {
@@ -549,12 +808,12 @@ try {
 	exit 7
 }
 
-$smbServerIP = $smbCredentialsXML.smbCredentials.driversReadWriteShare.ip
-$smbShare = "\\$smbServerIP\$($smbCredentialsXML.smbCredentials.driversReadWriteShare.shareName)"
+$smbServerAddress = $smbCredentialsXML.smbCredentials.driversReadWriteShare.address
+$smbShare = "\\$smbServerAddress\$($smbCredentialsXML.smbCredentials.driversReadWriteShare.shareName)"
 $smbUsername = $smbCredentialsXML.smbCredentials.driversReadWriteShare.username # (This is the user that can WRITE) domain MUST NOT be prefixed in username.
 $smbPassword = $smbCredentialsXML.smbCredentials.driversReadWriteShare.password
 
-$driversCacheBasePath = "$smbShare\Drivers\Cache"
+$driversCacheBasePath = "$smbShare\Cache"
 
 $didCacheDrivers = $false # Keep track of if drivers were successfully checked/cached in a previous loop to not unnecessarily re-check them.
 $skipCacheDrivers = $false # Can skip caching drivers after USB install
@@ -595,7 +854,7 @@ for ( ; ; ) {
 		Write-Host "`n  Skipping Caching Drivers After USB Install" -ForegroundColor Yellow
 	} else {
 		try {
-			$didConnectToServer = (Test-Connection $smbServerIP -Count 1 -Quiet -ErrorAction Stop)
+			$didConnectToServer = (Test-Connection $smbServerAddress -Count 1 -Quiet -ErrorAction Stop)
 		} catch {
 			Write-Host "`n  ERROR CONNECTING TO LOCAL FREE GEEK SERVER: $_" -ForegroundColor Red
 		}
@@ -603,7 +862,7 @@ for ( ; ; ) {
 		if ($didConnectToServer) {
 			Write-Host "`n  Successfully Connected to Local Free Geek Server" -ForegroundColor Green
 		} else {
-			Write-Host "`n  ERROR: Failed to connect to local Free Geek server `"$smbServerIP`"." -ForegroundColor Red
+			Write-Host "`n  ERROR: Failed to connect to local Free Geek server `"$smbServerAddress`"." -ForegroundColor Red
 
 			$lastTaskSucceeded = $false
 		}

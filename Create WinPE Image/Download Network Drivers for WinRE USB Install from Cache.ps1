@@ -27,58 +27,71 @@ if (-not (Test-Path $basePath)) {
 
 $winREnetDriversOutputPath = "$basePath\WinRE Network Drivers for USB Install"
 
-[xml]$smbCredentialsXML = Get-Content "$PSScriptRoot\Install Folder Resources\Scripts\smb-credentials.xml" -ErrorAction Stop
 
-$smbServerIP = $smbCredentialsXML.smbCredentials.driversReadOnlyShare.ip
-$smbShare = "\\$smbServerIP\$($smbCredentialsXML.smbCredentials.driversReadOnlyShare.shareName)"
-$smbUsername = $smbCredentialsXML.smbCredentials.driversReadOnlyShare.username # (This is the user that can READ ONLY) domain MUST NOT be prefixed in username.
-$smbPassword = $smbCredentialsXML.smbCredentials.driversReadOnlyShare.password
+$driversCacheBasePath = '\\FG-WindowsNAS\FG-Windows-Drivers\Cache' # SMB share credentials SHOULD BE SAVED in "Credential Manager" app so that it will auto-connect when the path is specified.
 
-$driversCacheBasePath = "$smbShare\Drivers\Cache"
+if (-not (Test-Path $driversCacheBasePath)) {
+	Write-Host "`n  ERROR: Failed to connect to local Free Geek SMB share `"$driversCacheBasePath`"." -ForegroundColor Red
 
-try {
-	Test-Connection $smbServerIP -Count 1 -Quiet -ErrorAction Stop | Out-Null
-} catch {
-	Write-Host "`n  ERROR CONNECTING TO LOCAL FREE GEEK SERVER: $_" -ForegroundColor Red
+	$Host.UI.RawUI.FlushInputBuffer() # So that key presses before this point are ignored.
+	Read-Host "`n`n  FAILED TO DOWNLOAD NETWORK DRIVERS FROM CACHE" | Out-Null
+
 	exit 1
 }
 
-Write-Host "`n  Mounting SMB Share for Drivers Cache - PLEASE WAIT, THIS MAY TAKE A MOMENT..." -NoNewline
 
-# Try to connect to SMB Share 5 times before stopping to show error to user because sometimes it takes a few attempts, or it sometimes just fails and takes more manual reattempts before it finally works.
-for ($smbMountAttempt = 0; $smbMountAttempt -lt 5; $smbMountAttempt ++) {
-	try {
-		# If we don't get the New-SmbMapping return value it seems to be asynchronous, which results in messages being show out of order result and also result in a failure not being detected.
-		$smbMappingStatus = (New-SmbMapping -RemotePath $smbShare -UserName $smbUsername -Password $smbPassword -Persistent $false -ErrorAction Stop).Status
+Write-Output "`n  Checking Drivers Cache for Stray (No Longer Referenced) Drivers to Delete..."
 
-		if ($smbMappingStatus -eq 0) {
-			Write-Host "`n`n  Successfully Mounted SMB Share for Drivers Cache" -ForegroundColor Green
-		} else {
-			throw "SMB Mapping Status $smbMappingStatus"
-		}
+try {
+	$allReferencedCachedDrivers = @()
 
-		break
-	} catch {
-		if ($smbMountAttempt -lt 4) {
-			Write-Host '.' -NoNewline
-			Start-Sleep ($smbMountAttempt + 1) # Sleep a little longer after each attempt.
-		} else {
-			Write-Host "`n`n  ERROR MOUNTING SMB SHARE: $_" -ForegroundColor Red
-			Write-Host "`n  ERROR: Failed to connect to local Free Geek SMB share `"$smbShare`"." -ForegroundColor Red
+	Get-ChildItem "$driversCacheBasePath\*" -File -Include '*.txt' -ErrorAction Stop | ForEach-Object {
+		$allReferencedCachedDrivers += Get-Content $_.FullName -ErrorAction Stop
+	}
 
-			$Host.UI.RawUI.FlushInputBuffer() # So that key presses before this point are ignored.
-			Read-Host "`n`n  FAILED TO DOWNLOAD NETWORK DRIVERS FROM CACHE" | Out-Null
+	$allReferencedCachedDrivers = $allReferencedCachedDrivers | Sort-Object -Unique
 
-			exit 2
+	$deletedStrayCachedDriversCount = 0
+
+	$currentEpochTime = [int64](Get-Date -UFormat '%s') # ALSO check for any LOCK files over a day old and delete them and their associated drivers (assuming if they exist something went wrong and the driver may be incomplete).
+	Get-ChildItem "$driversCacheBasePath\Unique Drivers\*" -File -Include '*-CACHING.lock' -ErrorAction Stop | ForEach-Object {
+		$thisCachedDriverLockFilePathAge = ($currentEpochTime - [int64](Get-Content -Raw $_.FullName -ErrorAction Stop))
+
+		if (($null -eq $thisCachedDriverLockFilePathAge) -or ($thisCachedDriverLockFilePathAge -ge 86400) -or ($thisCachedDriverLockFilePathAge -lt 0)) {
+			$thisCachedDriverDirectoryPath = $_.FullName.Replace('-CACHING.lock', '')
+			if (Test-Path $thisCachedDriverDirectoryPath) {
+				Remove-Item $thisCachedDriverDirectoryPath -Recurse -Force -ErrorAction Stop
+			}
+
+			Remove-Item $_.FullName -ErrorAction Stop
+
+			$deletedStrayCachedDriversCount ++
 		}
 	}
+
+	Get-ChildItem "$driversCacheBasePath\Unique Drivers" -Directory -ErrorAction Stop | ForEach-Object {
+		if ((-not $allReferencedCachedDrivers.Contains($_.Name)) -and (-not (Test-Path "$($_.FullName)-CACHING.lock"))) {
+			Remove-Item $_.FullName -Recurse -Force -ErrorAction Stop
+			$deletedStrayCachedDriversCount ++
+		}
+	}
+
+	if ($deletedStrayCachedDriversCount -eq 0) {
+		Write-Host "`n  Successfully Checked Drivers Cache and Found No Strays to Delete" -ForegroundColor Green
+	} else {
+		Write-Host "`n  Successfully Deleted $deletedStrayCachedDriversCount Strays From Drivers Cache" -ForegroundColor Green
+	}
+} catch {
+	Write-Host "`n  ERROR DELETED STRAY CACHED DRIVERS: $_" -ForegroundColor Red
+	Write-Host "`n  ERROR: Failed to check for or delete stray cached drivers." -ForegroundColor Red
 }
 
 if (-not (Test-Path $winREnetDriversOutputPath)) {
 	New-Item -ItemType 'Directory' -Path $winREnetDriversOutputPath -ErrorAction Stop | Out-Null
 }
 
-Write-Output "`n  Downloading WinRE Network Drivers for USB Install from Driver Cache..."
+
+Write-Output "`n`n  Downloading WinRE Network Drivers for USB Install from Driver Cache..."
 
 $allCachedDriverPaths = (Get-ChildItem "$driversCacheBasePath\Unique Drivers" -Directory).FullName
 
@@ -117,7 +130,7 @@ foreach ($thisDriverFolderPath in $allCachedDriverPaths) {
 
 					if ($thisDriverClass -eq 'NET') {
 						$thisDriverIndex ++
-						$thisDriverSizeMB = $([math]::Round(((Get-ChildItem -Path $thisDriverFolderPath -Recurse | Measure-Object -Property Length -Sum).Sum / 1MB), 2))
+						$thisDriverSizeMB = $([math]::Round(((Get-ChildItem -Path $thisDriverFolderPath -Recurse | Measure-Object -Property 'Length' -Sum).Sum / 1MB), 2))
 						if ($thisDriverSizeMB -lt 20) {
 							$netDriverFolderNames += $thisDriverFolderName
 							if (-not (Test-Path "$winREnetDriversOutputPath\$thisDriverFolderName")) {
@@ -143,31 +156,33 @@ foreach ($thisDriverFolderPath in $allCachedDriverPaths) {
 	}
 }
 
-Remove-SmbMapping -RemotePath $smbShare -Force -UpdateProfile -ErrorAction SilentlyContinue # Done with SMB Share now, so remove it.
-
 Write-Host "`n  Downloaded $downloadedNetDriversCount Network Drivers from Cache" -ForegroundColor Green
 
-try {
+
+if ($thisDriverIndex -gt 0) {
 	Write-Output "`n`n  Checking Downloaded Network Drivers for Stray (No Longer Cached) Drivers to Delete..."
 
-	$deletedStrayDownloadedNetDriversCount = 0
+	try {
+		$deletedStrayDownloadedNetDriversCount = 0
 
-	Get-ChildItem "$winREnetDriversOutputPath" -ErrorAction Stop | ForEach-Object {
-		if (-not $netDriverFolderNames.Contains($_.Name)) {
-			$deletedStrayDownloadedNetDriversCount ++
-			Remove-Item $_.FullName -Recurse -Force -ErrorAction Stop
+		Get-ChildItem "$winREnetDriversOutputPath" -ErrorAction Stop | ForEach-Object {
+			if (-not $netDriverFolderNames.Contains($_.Name)) {
+				$deletedStrayDownloadedNetDriversCount ++
+				Remove-Item $_.FullName -Recurse -Force -ErrorAction Stop
+			}
 		}
-	}
 
-	if ($deletedStrayDownloadedNetDriversCount -eq 0) {
-		Write-Host "`n  Checked Downloaded Network Drivers and Found No Strays to Delete" -ForegroundColor Green
-	} else {
-		Write-Host "`n  Deleted $deletedStrayDownloadedNetDriversCount Strays From Downloaded Network Drivers" -ForegroundColor Green
+		if ($deletedStrayDownloadedNetDriversCount -eq 0) {
+			Write-Host "`n  Checked Downloaded Network Drivers and Found No Strays to Delete" -ForegroundColor Green
+		} else {
+			Write-Host "`n  Deleted $deletedStrayDownloadedNetDriversCount Strays From Downloaded Network Drivers" -ForegroundColor Green
+		}
+	} catch {
+		Write-Host "`n  ERROR DELETED STRAY DOWNLOADED NETWORK DRIVERS: $_" -ForegroundColor Red
+		Write-Host "`n  ERROR: Failed to check for or delete stray downloaded network drivers." -ForegroundColor Red
 	}
-} catch {
-	Write-Host "`n  ERROR DELETED STRAY DOWNLOADED NETWORK DRIVERS: $_" -ForegroundColor Red
-	Write-Host "`n  ERROR: Failed to check for or delete stray downloaded network drivers." -ForegroundColor Red
 }
+
 
 $Host.UI.RawUI.FlushInputBuffer() # So that key presses before this point are ignored.
 Read-Host "`n`n  DONE DOWNLOADING NETWORK DRIVERS FROM CACHE" | Out-Null

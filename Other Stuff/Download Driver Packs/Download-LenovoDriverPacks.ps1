@@ -25,42 +25,42 @@
 
 $ProgressPreference = 'SilentlyContinue' # Not showing progress makes "Invoke-WebRequest" downloads MUCH faster: https://stackoverflow.com/a/43477248
 
-if (Test-Path "$PSScriptRoot\DriverPackCatalog-LenovoV1-NEW.xml") {
-	Remove-Item "$PSScriptRoot\DriverPackCatalog-LenovoV1-NEW.xml" -Force
+if (Test-Path "$PSScriptRoot\Driver Pack Catalogs\DriverPackCatalog-LenovoV1-NEW.xml") {
+	Remove-Item "$PSScriptRoot\Driver Pack Catalogs\DriverPackCatalog-LenovoV1-NEW.xml" -Force
 }
 
-if (Test-Path "$PSScriptRoot\DriverPackCatalog-LenovoV2-NEW.xml") {
-	Remove-Item "$PSScriptRoot\DriverPackCatalog-LenovoV2-NEW.xml" -Force
+if (Test-Path "$PSScriptRoot\Driver Pack Catalogs\DriverPackCatalog-LenovoV2-NEW.xml") {
+	Remove-Item "$PSScriptRoot\Driver Pack Catalogs\DriverPackCatalog-LenovoV2-NEW.xml" -Force
 }
 
 if ($IsWindows -or ($null -eq $IsWindows)) {
 	[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12, [Net.SecurityProtocolType]::Ssl3
 }
 
-Invoke-WebRequest -Uri 'https://download.lenovo.com/cdrt/td/catalog.xml' -OutFile "$PSScriptRoot\DriverPackCatalog-LenovoV1-NEW.xml"
+Invoke-WebRequest -Uri 'https://download.lenovo.com/cdrt/td/catalog.xml' -OutFile "$PSScriptRoot\Driver Pack Catalogs\DriverPackCatalog-LenovoV1-NEW.xml"
 
-if (Test-Path "$PSScriptRoot\DriverPackCatalog-LenovoV1-NEW.xml") {
-	if (Test-Path "$PSScriptRoot\DriverPackCatalog-LenovoV1.xml") {
-		Remove-Item "$PSScriptRoot\DriverPackCatalog-LenovoV1.xml" -Force
+if (Test-Path "$PSScriptRoot\Driver Pack Catalogs\DriverPackCatalog-LenovoV1-NEW.xml") {
+	if (Test-Path "$PSScriptRoot\Driver Pack Catalogs\DriverPackCatalog-LenovoV1.xml") {
+		Remove-Item "$PSScriptRoot\Driver Pack Catalogs\DriverPackCatalog-LenovoV1.xml" -Force
 	}
 
-	Move-Item "$PSScriptRoot\DriverPackCatalog-LenovoV1-NEW.xml" "$PSScriptRoot\DriverPackCatalog-LenovoV1.xml" -Force
+	Move-Item "$PSScriptRoot\Driver Pack Catalogs\DriverPackCatalog-LenovoV1-NEW.xml" "$PSScriptRoot\Driver Pack Catalogs\DriverPackCatalog-LenovoV1.xml" -Force
 }
 
-Invoke-WebRequest -Uri 'https://download.lenovo.com/cdrt/td/catalogv2.xml' -OutFile "$PSScriptRoot\DriverPackCatalog-LenovoV2-NEW.xml"
+Invoke-WebRequest -Uri 'https://download.lenovo.com/cdrt/td/catalogv2.xml' -OutFile "$PSScriptRoot\Driver Pack Catalogs\DriverPackCatalog-LenovoV2-NEW.xml"
 
-if (Test-Path "$PSScriptRoot\DriverPackCatalog-LenovoV2-NEW.xml") {
-	if (Test-Path "$PSScriptRoot\DriverPackCatalog-LenovoV2.xml") {
-		Remove-Item "$PSScriptRoot\DriverPackCatalog-LenovoV2.xml" -Force
+if (Test-Path "$PSScriptRoot\Driver Pack Catalogs\DriverPackCatalog-LenovoV2-NEW.xml") {
+	if (Test-Path "$PSScriptRoot\Driver Pack Catalogs\DriverPackCatalog-LenovoV2.xml") {
+		Remove-Item "$PSScriptRoot\Driver Pack Catalogs\DriverPackCatalog-LenovoV2.xml" -Force
 	}
 
-	Move-Item "$PSScriptRoot\DriverPackCatalog-LenovoV2-NEW.xml" "$PSScriptRoot\DriverPackCatalog-LenovoV2.xml" -Force
+	Move-Item "$PSScriptRoot\Driver Pack Catalogs\DriverPackCatalog-LenovoV2-NEW.xml" "$PSScriptRoot\Driver Pack Catalogs\DriverPackCatalog-LenovoV2.xml" -Force
 }
 
 Get-Date
 
-[xml]$lenovoDriverPackCatalogXMLv1 = Get-Content "$PSScriptRoot/DriverPackCatalog-LenovoV1.xml"
-[xml]$lenovoDriverPackCatalogXMLv2 = Get-Content "$PSScriptRoot/DriverPackCatalog-LenovoV2.xml"
+[xml]$lenovoDriverPackCatalogXMLv1 = Get-Content "$PSScriptRoot\Driver Pack Catalogs\DriverPackCatalog-LenovoV1.xml"
+[xml]$lenovoDriverPackCatalogXMLv2 = Get-Content "$PSScriptRoot\Driver Pack Catalogs\DriverPackCatalog-LenovoV2.xml"
 
 $driverPacksForSystemIDs = @{}
 
@@ -232,8 +232,8 @@ foreach ($thisDriverPack in $lenovoDriverPackCatalogXMLv1.Products.Product) {
 $supportPageDetailsForEXEs = @{}
 
 # "DriverPackCatalog-LenovoV1-EXEsFromSupportPages.xml" is created by running "Retrieve-LenovoEXEsFromSupportPages.ps1" on Windows.
-if (Test-Path "$PSScriptRoot/DriverPackCatalog-LenovoV1-EXEsFromSupportPages.xml") {
-	$exesFromSupportPagesForLenovoDriverPackCatalogXMLv1 = Import-Clixml -Path "$PSScriptRoot/DriverPackCatalog-LenovoV1-EXEsFromSupportPages.xml"
+if (Test-Path "$PSScriptRoot\Driver Pack Catalogs\DriverPackCatalog-LenovoV1-EXEsFromSupportPages.xml") {
+	$exesFromSupportPagesForLenovoDriverPackCatalogXMLv1 = Import-Clixml -Path "$PSScriptRoot\Driver Pack Catalogs\DriverPackCatalog-LenovoV1-EXEsFromSupportPages.xml"
 
 	foreach ($supportPageInfo in ($exesFromSupportPagesForLenovoDriverPackCatalogXMLv1.GetEnumerator() | Sort-Object -Property Key)) {
 		foreach ($thisSupportPageInfo in $supportPageInfo.Value) {
@@ -377,7 +377,14 @@ $validatedExeCount = 0
 $expandedCount = 0
 $notEnoughSpaceCount = 0
 
-$lenovoDriverPacksPath = 'F:\SMB\Drivers\Packs\Lenovo'
+$systemTempDir = [System.Environment]::GetEnvironmentVariable('TEMP', 'Machine') # Get SYSTEM (not user) temporary directory, which should be "\Windows\Temp".
+if (-not (Test-Path $systemTempDir)) {
+	$systemTempDir = "$Env:SystemRoot\Temp"
+}
+
+$exeDownloadPath = "$systemTempDir\Lenovo Driver Pack EXEs"
+
+$lenovoDriverPacksPath = '\\FG-WindowsNAS\FG-Windows-Drivers\Packs\Lenovo' # SMB share credentials SHOULD BE SAVED in "Credential Manager" app so that it will auto-connect when the path is specified.
 
 foreach ($theseRedundantDriverPacks in ($uniqueDriverPacks.GetEnumerator() | Sort-Object -Property Key)) {
 	$thisUniqueDriverPack = $theseRedundantDriverPacks.Value | Select-Object -First 1
@@ -406,7 +413,6 @@ foreach ($theseRedundantDriverPacks in ($uniqueDriverPacks.GetEnumerator() | Sor
 	}
 
 	if (($IsWindows -or ($null -eq $IsWindows)) -and (Test-Path $lenovoDriverPacksPath)) {
-		$exeDownloadPath = "$lenovoDriverPacksPath\Unique Driver Pack EXEs"
 		$exeExpansionPath = "$lenovoDriverPacksPath\Unique Driver Packs"
 
 		if (-not (Test-Path $exeDownloadPath)) {
@@ -422,7 +428,7 @@ foreach ($theseRedundantDriverPacks in ($uniqueDriverPacks.GetEnumerator() | Sor
 				Remove-Item "$exeDownloadPath\$($thisUniqueDriverPack.FileName)" -Force
 			}
 
-			if ((Get-Volume (Get-Item $lenovoDriverPacksPath).PSDrive.Name).SizeRemaining -ge 10GB) {
+			if (($exeDownloadPath.StartsWith('\\') -or ((Get-Item $exeDownloadPath).PSDrive.Free -ge 10GB)) -and ($lenovoDriverPacksPath.StartsWith('\\') -or ((Get-Item $lenovoDriverPacksPath).PSDrive.Free -ge 10GB))) {
 				Write-Output 'DOWNLOADING...'
 				Invoke-WebRequest -Uri $thisUniqueDriverPack.DownloadURL -OutFile "$exeDownloadPath\$($thisUniqueDriverPack.FileName)"
 
@@ -541,8 +547,8 @@ if (($IsWindows -or ($null -eq $IsWindows)) -and (Test-Path $lenovoDriverPacksPa
 		}
 	}
 
-	if (Test-Path "$lenovoDriverPacksPath\Unique Driver Pack EXEs") {
-		Remove-Item "$lenovoDriverPacksPath\Unique Driver Pack EXEs" -Recurse -Force
+	if (Test-Path $exeDownloadPath) {
+		Remove-Item $exeDownloadPath -Recurse -Force
 	}
 }
 
@@ -554,6 +560,11 @@ Write-Output "VALIDATED EXEs: $validatedExeCount"
 Write-Output "EXPANDED: $expandedCount"
 Write-Output "NOT ENOUGH SPACE TO DOWNLOAD: $notEnoughSpaceCount"
 Write-Output '----------'
+
+if (-not (Test-Path $lenovoDriverPacksPath)) {
+	Write-Output "ERROR: `"$lenovoDriverPacksPath`" NOT FOUND"
+	Write-Output '----------'
+}
 
 if ($IsWindows -or ($null -eq $IsWindows)) {
 	$Host.UI.RawUI.FlushInputBuffer() # So that key presses before this point are ignored.

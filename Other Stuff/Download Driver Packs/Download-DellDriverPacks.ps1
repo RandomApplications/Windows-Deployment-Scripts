@@ -24,33 +24,33 @@
 
 $ProgressPreference = 'SilentlyContinue' # Not showing progress makes "Invoke-WebRequest" downloads MUCH faster: https://stackoverflow.com/a/43477248
 
-if (Test-Path "$PSScriptRoot\DriverPackCatalog-Dell.cab") {
-	Remove-Item "$PSScriptRoot\DriverPackCatalog-Dell.cab" -Force
+if (Test-Path "$PSScriptRoot\Driver Pack Catalogs\DriverPackCatalog-Dell.cab") {
+	Remove-Item "$PSScriptRoot\Driver Pack Catalogs\DriverPackCatalog-Dell.cab" -Force
 }
 
 if ($IsWindows -or ($null -eq $IsWindows)) {
 	[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12, [Net.SecurityProtocolType]::Ssl3
 }
 
-Invoke-WebRequest -Uri 'http://downloads.dell.com/catalog/DriverPackCatalog.cab' -OutFile "$PSScriptRoot\DriverPackCatalog-Dell.cab"
+Invoke-WebRequest -Uri 'http://downloads.dell.com/catalog/DriverPackCatalog.cab' -OutFile "$PSScriptRoot\Driver Pack Catalogs\DriverPackCatalog-Dell.cab"
 
-if (($IsWindows -or ($null -eq $IsWindows)) -and (Test-Path "$PSScriptRoot\DriverPackCatalog-Dell.cab")) {
-	$expandExitCode = (Start-Process 'expand' -NoNewWindow -Wait -PassThru -RedirectStandardOutput 'NUL' -ArgumentList "`"$PSScriptRoot\DriverPackCatalog-Dell.cab`"", "`"$PSScriptRoot\DriverPackCatalog-Dell-NEW.xml`"").ExitCode
+if (($IsWindows -or ($null -eq $IsWindows)) -and (Test-Path "$PSScriptRoot\Driver Pack Catalogs\DriverPackCatalog-Dell.cab")) {
+	$expandExitCode = (Start-Process 'expand' -NoNewWindow -Wait -PassThru -RedirectStandardOutput 'NUL' -ArgumentList "`"$PSScriptRoot\Driver Pack Catalogs\DriverPackCatalog-Dell.cab`"", "`"$PSScriptRoot\Driver Pack Catalogs\DriverPackCatalog-Dell-NEW.xml`"").ExitCode
 
 	if ($expandExitCode -ne 0) {
 		Write-Output ">>> EXPANSION FAILED (EXIT CODE $expandExitCode) <<<"
 	}
 
-	if ((Test-Path "$PSScriptRoot\DriverPackCatalog-Dell-NEW.xml") -and (Test-Path "$PSScriptRoot\DriverPackCatalog-Dell.xml")) {
-		Remove-Item "$PSScriptRoot\DriverPackCatalog-Dell.xml" -Force
+	if ((Test-Path "$PSScriptRoot\Driver Pack Catalogs\DriverPackCatalog-Dell-NEW.xml") -and (Test-Path "$PSScriptRoot\Driver Pack Catalogs\DriverPackCatalog-Dell.xml")) {
+		Remove-Item "$PSScriptRoot\Driver Pack Catalogs\DriverPackCatalog-Dell.xml" -Force
 	}
 
-	Move-Item "$PSScriptRoot\DriverPackCatalog-Dell-NEW.xml" "$PSScriptRoot\DriverPackCatalog-Dell.xml" -Force
+	Move-Item "$PSScriptRoot\Driver Pack Catalogs\DriverPackCatalog-Dell-NEW.xml" "$PSScriptRoot\Driver Pack Catalogs\DriverPackCatalog-Dell.xml" -Force
 }
 
 Get-Date
 
-[xml]$dellDriverPackCatalogXML = Get-Content "$PSScriptRoot\DriverPackCatalog-Dell.xml"
+[xml]$dellDriverPackCatalogXML = Get-Content "$PSScriptRoot\Driver Pack Catalogs\DriverPackCatalog-Dell.xml"
 
 # Create Dictionary with $computerModel as key to overwrite old keys with new ones to only download the latest Driver reference.
 $driverPacksForSystemIDs = @{}
@@ -202,7 +202,14 @@ $validatedCABorEXEcount = 0
 $expandedCount = 0
 $notEnoughSpaceCount = 0
 
-$dellDriverPacksPath = 'F:\SMB\Drivers\Packs\Dell'
+$systemTempDir = [System.Environment]::GetEnvironmentVariable('TEMP', 'Machine') # Get SYSTEM (not user) temporary directory, which should be "\Windows\Temp".
+if (-not (Test-Path $systemTempDir)) {
+	$systemTempDir = "$Env:SystemRoot\Temp"
+}
+
+$cabOrExeDownloadPath = "$systemTempDir\Dell Driver Pack CABs"
+
+$dellDriverPacksPath = '\\FG-WindowsNAS\FG-Windows-Drivers\Packs\Dell' # SMB share credentials SHOULD BE SAVED in "Credential Manager" app so that it will auto-connect when the path is specified.
 
 foreach ($theseRedundantDriverPacks in ($uniqueDriverPacks.GetEnumerator() | Sort-Object -Property Key)) {
 	$thisUniqueDriverPack = $theseRedundantDriverPacks.Value | Select-Object -First 1
@@ -225,7 +232,6 @@ foreach ($theseRedundantDriverPacks in ($uniqueDriverPacks.GetEnumerator() | Sor
 	}
 
 	if (($IsWindows -or ($null -eq $IsWindows)) -and (Test-Path $dellDriverPacksPath)) {
-		$cabOrExeDownloadPath = "$dellDriverPacksPath\Unique Driver Pack CABs"
 		$cabOrExeExpansionPath = "$dellDriverPacksPath\Unique Driver Packs"
 
 		if (-not (Test-Path $cabOrExeDownloadPath)) {
@@ -241,7 +247,7 @@ foreach ($theseRedundantDriverPacks in ($uniqueDriverPacks.GetEnumerator() | Sor
 				Remove-Item "$cabOrExeDownloadPath\$($thisUniqueDriverPack.FileName)" -Force
 			}
 
-			if ((Get-Volume (Get-Item $dellDriverPacksPath).PSDrive.Name).SizeRemaining -ge 10GB) {
+			if (($cabOrExeDownloadPath.StartsWith('\\') -or ((Get-Item $cabOrExeDownloadPath).PSDrive.Free -ge 10GB)) -and ($dellDriverPacksPath.StartsWith('\\') -or ((Get-Item $dellDriverPacksPath).PSDrive.Free -ge 10GB))) {
 				Write-Output 'DOWNLOADING...'
 				Invoke-WebRequest -Uri $thisUniqueDriverPack.DownloadURL -OutFile "$cabOrExeDownloadPath\$($thisUniqueDriverPack.FileName)"
 
@@ -344,8 +350,8 @@ if (($IsWindows -or ($null -eq $IsWindows)) -and (Test-Path $dellDriverPacksPath
 		}
 	}
 
-	if (Test-Path "$dellDriverPacksPath\Unique Driver Pack CABs") {
-		Remove-Item "$dellDriverPacksPath\Unique Driver Pack CABs" -Recurse -Force
+	if (Test-Path $cabOrExeDownloadPath) {
+		Remove-Item $cabOrExeDownloadPath -Recurse -Force
 	}
 }
 
@@ -357,6 +363,11 @@ Write-Output "VALIDATED CAB/EXEs: $validatedCABorEXEcount"
 Write-Output "EXPANDED: $expandedCount"
 Write-Output "NOT ENOUGH SPACE TO DOWNLOAD: $notEnoughSpaceCount"
 Write-Output '----------'
+
+if (-not (Test-Path $dellDriverPacksPath)) {
+	Write-Output "ERROR: `"$dellDriverPacksPath`" NOT FOUND"
+	Write-Output '----------'
+}
 
 if ($IsWindows -or ($null -eq $IsWindows)) {
 	$Host.UI.RawUI.FlushInputBuffer() # So that key presses before this point are ignored.
